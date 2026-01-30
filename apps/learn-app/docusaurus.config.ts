@@ -15,6 +15,10 @@ const AUTH_URL = process.env.AUTH_URL || "http://localhost:3001";
 const OAUTH_CLIENT_ID =
   process.env.OAUTH_CLIENT_ID || "agent-factory-public-client";
 
+// AgentFactory API URL for lesson personalization
+const AGENTFACTORY_API_URL =
+  process.env.AGENTFACTORY_API_URL || "http://localhost:8080";
+
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 // Content Source:
@@ -33,6 +37,7 @@ const config: Config = {
   customFields: {
     authUrl: AUTH_URL,
     oauthClientId: OAUTH_CLIENT_ID,
+    agentFactoryApiUrl: AGENTFACTORY_API_URL,
   },
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

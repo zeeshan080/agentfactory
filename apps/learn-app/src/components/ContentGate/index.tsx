@@ -1,10 +1,15 @@
-import React, { ReactNode, useState, useEffect } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { getOAuthAuthorizationUrl } from '@/lib/auth-client';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import styles from './ContentGate.module.css';
+import React, { ReactNode, useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { getOAuthAuthorizationUrl } from "@/lib/auth-client";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
+import styles from "./ContentGate.module.css";
 
-export type GateType = 'quiz' | 'summary' | 'exercise' | 'premium';
+export type GateType =
+  | "quiz"
+  | "summary"
+  | "exercise"
+  | "premium"
+  | "personalization";
 
 interface ContentGateProps {
   children?: ReactNode;
@@ -20,55 +25,70 @@ interface ContentGateProps {
 }
 
 // Gate configuration per content type
-const gateConfig: Record<GateType, {
-  title: string;
-  description: string;
-  icon: string;
-  badge: string;
-  benefits: string[];
-}> = {
+const gateConfig: Record<
+  GateType,
+  {
+    title: string;
+    description: string;
+    icon: string;
+    badge: string;
+    benefits: string[];
+  }
+> = {
   quiz: {
-    title: 'Unlock Chapter Quiz',
-    description: 'Test your understanding with interactive questions and get instant feedback on your progress.',
-    icon: '🎯',
-    badge: 'Chapter Quiz',
+    title: "Unlock Chapter Quiz",
+    description:
+      "Test your understanding with interactive questions and get instant feedback on your progress.",
+    icon: "🎯",
+    badge: "Chapter Quiz",
     benefits: [
-      'Track your learning progress',
-      'Get detailed explanations',
-      'Retake anytime to improve',
+      "Track your learning progress",
+      "Get detailed explanations",
+      "Retake anytime to improve",
     ],
   },
   summary: {
-    title: 'Unlock Lesson Summary',
-    description: 'Access condensed key takeaways and quick reference notes for efficient review.',
-    icon: '📋',
-    badge: 'Quick Reference',
+    title: "Unlock Lesson Summary",
+    description:
+      "Access condensed key takeaways and quick reference notes for efficient review.",
+    icon: "📋",
+    badge: "Quick Reference",
     benefits: [
-      'Key concepts at a glance',
-      'Perfect for revision',
-      'Save study time',
+      "Key concepts at a glance",
+      "Perfect for revision",
+      "Save study time",
     ],
   },
   exercise: {
-    title: 'Unlock Practice Exercise',
-    description: 'Get hands-on with coding exercises and guided solutions to build real skills.',
-    icon: '💻',
-    badge: 'Hands-On Practice',
+    title: "Unlock Practice Exercise",
+    description:
+      "Get hands-on with coding exercises and guided solutions to build real skills.",
+    icon: "💻",
+    badge: "Hands-On Practice",
     benefits: [
-      'Real-world scenarios',
-      'Step-by-step guidance',
-      'Build portfolio projects',
+      "Real-world scenarios",
+      "Step-by-step guidance",
+      "Build portfolio projects",
     ],
   },
   premium: {
-    title: 'Unlock Premium Content',
-    description: 'Access exclusive learning materials designed to accelerate your journey.',
-    icon: '✨',
-    badge: 'Premium',
+    title: "Unlock Premium Content",
+    description:
+      "Access exclusive learning materials designed to accelerate your journey.",
+    icon: "✨",
+    badge: "Premium",
+    benefits: ["Exclusive resources", "Advanced techniques", "Expert insights"],
+  },
+  personalization: {
+    title: "Unlock Personalized Learning",
+    description:
+      "Get content tailored to your learning style, pace, and goals for a customized experience.",
+    icon: "👤",
+    badge: "Personalized",
     benefits: [
-      'Exclusive resources',
-      'Advanced techniques',
-      'Expert insights',
+      "Content adapted to your level",
+      "Learn at your own pace",
+      "Personalized recommendations",
     ],
   },
 };
@@ -130,8 +150,11 @@ export function ContentGate({
 }: ContentGateProps) {
   const { session, isLoading } = useAuth();
   const { siteConfig } = useDocusaurusContext();
-  const authUrl = (siteConfig.customFields?.authUrl as string) || 'http://localhost:3001';
-  const oauthClientId = (siteConfig.customFields?.oauthClientId as string) || 'agent-factory-public-client';
+  const authUrl =
+    (siteConfig.customFields?.authUrl as string) || "http://localhost:3001";
+  const oauthClientId =
+    (siteConfig.customFields?.oauthClientId as string) ||
+    "agent-factory-public-client";
 
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -146,15 +169,29 @@ export function ContentGate({
     clientId: oauthClientId,
   };
 
+  // Get current page URL to return to after auth
+  const getCurrentReturnUrl = () => {
+    if (typeof window === "undefined") return undefined;
+    // Include hash to preserve tab state (e.g., #summary, #personalization)
+    return (
+      window.location.pathname + window.location.search + window.location.hash
+    );
+  };
+
   // Handle sign in
   const handleSignIn = async () => {
     setIsSigningIn(true);
     try {
-      const authorizationUrl = await getOAuthAuthorizationUrl('signin', oauthConfig);
-      await new Promise(resolve => setTimeout(resolve, 50));
+      const returnUrl = getCurrentReturnUrl();
+      const authorizationUrl = await getOAuthAuthorizationUrl(
+        "signin",
+        oauthConfig,
+        returnUrl,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
       window.location.href = authorizationUrl;
     } catch (error) {
-      console.error('Sign in failed:', error);
+      console.error("Sign in failed:", error);
       setIsSigningIn(false);
     }
   };
@@ -163,11 +200,16 @@ export function ContentGate({
   const handleSignUp = async () => {
     setIsSigningIn(true);
     try {
-      const oauthUrl = await getOAuthAuthorizationUrl('signup', oauthConfig);
+      const returnUrl = getCurrentReturnUrl();
+      const oauthUrl = await getOAuthAuthorizationUrl(
+        "signup",
+        oauthConfig,
+        returnUrl,
+      );
       const signupUrl = `${authUrl}/auth/sign-up?redirect=${encodeURIComponent(oauthUrl)}`;
       window.location.href = signupUrl;
     } catch (error) {
-      console.error('Sign up failed:', error);
+      console.error("Sign up failed:", error);
       setIsSigningIn(false);
     }
   };
@@ -196,7 +238,9 @@ export function ContentGate({
   // User is authenticated - show content (with optional unlock animation)
   if (session && !forceGate) {
     return (
-      <div className={`${styles.contentWrapper} ${isUnlocking ? styles.unlocking : ''}`}>
+      <div
+        className={`${styles.contentWrapper} ${isUnlocking ? styles.unlocking : ""}`}
+      >
         {children}
       </div>
     );

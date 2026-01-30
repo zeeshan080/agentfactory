@@ -1,100 +1,132 @@
-import React, { useEffect, useState } from 'react';
-import Layout from '@theme/Layout';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import { getRedirectUri, getHomeUrl } from '@/lib/url-utils';
+import React, { useEffect, useState } from "react";
+import Layout from "@theme/Layout";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
+import { getRedirectUri, getHomeUrl } from "@/lib/url-utils";
+import { parseOAuthState } from "@/lib/auth-client";
 
 // OAuth callback page - exchanges authorization code for tokens using PKCE
 export default function OAuthCallback(): React.JSX.Element {
-  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [status, setStatus] = useState<"loading" | "success" | "error">(
+    "loading",
+  );
   const [error, setError] = useState<string | null>(null);
   const { siteConfig } = useDocusaurusContext();
 
   // Get OAuth config from Docusaurus context
-  const authUrl = (siteConfig.customFields?.authUrl as string) || 'http://localhost:3001';
-  const oauthClientId = (siteConfig.customFields?.oauthClientId as string) || 'agent-factory-public-client';
+  const authUrl =
+    (siteConfig.customFields?.authUrl as string) || "http://localhost:3001";
+  const oauthClientId =
+    (siteConfig.customFields?.oauthClientId as string) ||
+    "agent-factory-public-client";
   // Generate redirect URI - auto-detects base path from current URL
   const redirectUri = getRedirectUri();
 
   useEffect(() => {
     const handleCallback = async () => {
       const urlParams = new URLSearchParams(window.location.search);
-      const code = urlParams.get('code');
-      const errorParam = urlParams.get('error');
-      const errorDescription = urlParams.get('error_description');
+      const code = urlParams.get("code");
+      const stateParam = urlParams.get("state");
+      const errorParam = urlParams.get("error");
+      const errorDescription = urlParams.get("error_description");
+
+      // Parse state to extract return URL (if present)
+      const statePayload = stateParam ? parseOAuthState(stateParam) : null;
+      const returnUrl = statePayload?.returnUrl;
+
+      // Debug logging
+      console.log("[Auth Callback] state param:", stateParam);
+      console.log("[Auth Callback] parsed payload:", statePayload);
+      console.log("[Auth Callback] returnUrl:", returnUrl);
 
       // Check for OAuth errors
       if (errorParam) {
         setError(errorDescription || errorParam);
-        setStatus('error');
+        setStatus("error");
         return;
       }
 
       // Check for authorization code
       if (!code) {
-        setError('No authorization code received');
-        setStatus('error');
+        setError("No authorization code received");
+        setStatus("error");
         return;
       }
 
       // Get PKCE code verifier from localStorage
       // Note: Using localStorage because sessionStorage doesn't persist across
       // full page navigations to different origins (auth server redirect)
-      const codeVerifier = localStorage.getItem('pkce_code_verifier');
+      const codeVerifier = localStorage.getItem("pkce_code_verifier");
       if (!codeVerifier) {
-        setError('PKCE code verifier not found. Please try signing in again.');
-        setStatus('error');
+        setError("PKCE code verifier not found. Please try signing in again.");
+        setStatus("error");
         return;
       }
 
       try {
         // Exchange code for tokens using PKCE (no client_secret needed)
         const response = await fetch(`${authUrl}/api/auth/oauth2/token`, {
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
+            "Content-Type": "application/x-www-form-urlencoded",
           },
           body: new URLSearchParams({
-            grant_type: 'authorization_code',
+            grant_type: "authorization_code",
             code,
             redirect_uri: redirectUri,
             client_id: oauthClientId,
             code_verifier: codeVerifier, // PKCE: use code_verifier instead of client_secret
           }),
-          credentials: 'include',
+          credentials: "include",
         });
 
         // Clear the code verifier after use
-        localStorage.removeItem('pkce_code_verifier');
+        localStorage.removeItem("pkce_code_verifier");
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error_description || errorData.error || 'Token exchange failed');
+          throw new Error(
+            errorData.error_description ||
+              errorData.error ||
+              "Token exchange failed",
+          );
         }
 
         const tokens = await response.json();
 
         // Store tokens in localStorage for the client
         if (tokens.access_token) {
-          localStorage.setItem('ainative_access_token', tokens.access_token);
+          localStorage.setItem("ainative_access_token", tokens.access_token);
           if (tokens.refresh_token) {
-            localStorage.setItem('ainative_refresh_token', tokens.refresh_token);
+            localStorage.setItem(
+              "ainative_refresh_token",
+              tokens.refresh_token,
+            );
           }
           if (tokens.id_token) {
-            localStorage.setItem('ainative_id_token', tokens.id_token);
+            localStorage.setItem("ainative_id_token", tokens.id_token);
           }
         }
 
-        setStatus('success');
+        setStatus("success");
 
-        // Redirect to home page after short delay (respects baseUrl)
+        // Redirect to original page (or home) after short delay
         setTimeout(() => {
-          window.location.href = getHomeUrl();
+          if (returnUrl) {
+            // returnUrl is a relative path, construct full URL
+            const baseUrl = getHomeUrl().replace(/\/$/, "");
+            window.location.href = baseUrl + returnUrl;
+          } else {
+            window.location.href = getHomeUrl();
+          }
         }, 1500);
-
       } catch (err) {
-        console.error('OAuth callback error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to complete authentication');
-        setStatus('error');
+        console.error("OAuth callback error:", err);
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to complete authentication",
+        );
+        setStatus("error");
       }
     };
 
@@ -103,88 +135,123 @@ export default function OAuthCallback(): React.JSX.Element {
 
   return (
     <Layout title="Authentication" description="Completing authentication...">
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '60vh',
-        padding: '2rem',
-      }}>
-        {status === 'loading' && (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "60vh",
+          padding: "2rem",
+        }}
+      >
+        {status === "loading" && (
           <>
-            <div style={{
-              width: '48px',
-              height: '48px',
-              border: '4px solid var(--border)',
-              borderTopColor: 'var(--primary)',
-              animation: 'spin 1s linear infinite',
-            }} />
+            <div
+              style={{
+                width: "48px",
+                height: "48px",
+                border: "4px solid var(--border)",
+                borderTopColor: "var(--primary)",
+                animation: "spin 1s linear infinite",
+              }}
+            />
             <style>{`
               @keyframes spin {
                 to { transform: rotate(360deg); }
               }
             `}</style>
-            <h2 style={{ marginTop: '1.5rem', color: 'var(--ifm-font-color-base)' }}>
+            <h2
+              style={{
+                marginTop: "1.5rem",
+                color: "var(--ifm-font-color-base)",
+              }}
+            >
               Completing sign in...
             </h2>
-            <p style={{ color: 'var(--ifm-font-color-secondary)' }}>
+            <p style={{ color: "var(--ifm-font-color-secondary)" }}>
               Please wait while we authenticate you.
             </p>
           </>
         )}
 
-        {status === 'success' && (
+        {status === "success" && (
           <>
-            <div style={{
-              width: '64px',
-              height: '64px',
-              backgroundColor: 'var(--success)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+            <div
+              style={{
+                width: "64px",
+                height: "64px",
+                backgroundColor: "var(--success)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="white"
+                strokeWidth="3"
+              >
                 <polyline points="20 6 9 17 4 12"></polyline>
               </svg>
             </div>
-            <h2 style={{ marginTop: '1.5rem', color: 'var(--ifm-font-color-base)' }}>
+            <h2
+              style={{
+                marginTop: "1.5rem",
+                color: "var(--ifm-font-color-base)",
+              }}
+            >
               Successfully signed in!
             </h2>
-            <p style={{ color: 'var(--ifm-font-color-secondary)' }}>
+            <p style={{ color: "var(--ifm-font-color-secondary)" }}>
               Redirecting you back to The AI Agent Factory...
             </p>
           </>
         )}
 
-        {status === 'error' && (
+        {status === "error" && (
           <>
-            <div style={{
-              width: '64px',
-              height: '64px',
-              backgroundColor: 'var(--destructive)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+            <div
+              style={{
+                width: "64px",
+                height: "64px",
+                backgroundColor: "var(--destructive)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="white"
+                strokeWidth="3"
+              >
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
               </svg>
             </div>
-            <h2 style={{ marginTop: '1.5rem', color: 'var(--ifm-font-color-base)' }}>
+            <h2
+              style={{
+                marginTop: "1.5rem",
+                color: "var(--ifm-font-color-base)",
+              }}
+            >
               Authentication failed
             </h2>
-            <p style={{ color: '#ef4444', marginBottom: '1rem' }}>
-              {error}
-            </p>
+            <p style={{ color: "#ef4444", marginBottom: "1rem" }}>{error}</p>
             <a
               href={getHomeUrl()}
               style={{
-                padding: '0.75rem 1.5rem',
-                backgroundColor: 'var(--primary)',
-                color: 'var(--primary-foreground)',
-                textDecoration: 'none',
+                padding: "0.75rem 1.5rem",
+                backgroundColor: "var(--primary)",
+                color: "var(--primary-foreground)",
+                textDecoration: "none",
               }}
             >
               Go back to home
