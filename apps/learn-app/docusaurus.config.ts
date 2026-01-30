@@ -218,7 +218,7 @@ const config: Config = {
             [
               require("../../libs/docusaurus/remark-interactive-python"),
               {
-                includePaths: ["/04-Coding-for-Problem-Solving/"],
+                includePaths: ["/05-Python-Fundamentals/"],
                 excludeMeta: ["nointeractive", "static"],
               },
             ],
