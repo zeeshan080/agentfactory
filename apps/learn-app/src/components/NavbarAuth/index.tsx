@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { getOAuthAuthorizationUrl } from '@/lib/auth-client';
-import { getHomeUrl } from '@/lib/url-utils';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import React, { useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { getOAuthAuthorizationUrl } from "@/lib/auth-client";
+import { getHomeUrl } from "@/lib/url-utils";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,8 +18,11 @@ import { User, LogOut, Settings } from "lucide-react";
 export function NavbarAuth() {
   const { session, isLoading, signOut, refreshUserData } = useAuth();
   const { siteConfig } = useDocusaurusContext();
-  const authUrl = (siteConfig.customFields?.authUrl as string) || 'http://localhost:3001';
-  const oauthClientId = (siteConfig.customFields?.oauthClientId as string) || 'agent-factory-public-client';
+  const authUrl =
+    (siteConfig.customFields?.authUrl as string) || "http://localhost:3001";
+  const oauthClientId =
+    (siteConfig.customFields?.oauthClientId as string) ||
+    "agent-factory-public-client";
 
   // OAuth config
   const oauthConfig = {
@@ -27,9 +30,25 @@ export function NavbarAuth() {
     clientId: oauthClientId,
   };
 
+  // Get current page URL to return to after auth
+  const getCurrentReturnUrl = () => {
+    if (typeof window === "undefined") return undefined;
+    // Use pathname + search + hash to preserve the current page location and tab state
+    return (
+      window.location.pathname + window.location.search + window.location.hash
+    );
+  };
+
   const handleSignIn = async () => {
-    const authorizationUrl = await getOAuthAuthorizationUrl('signin', oauthConfig);
-    await new Promise(resolve => setTimeout(resolve, 50));
+    const returnUrl = getCurrentReturnUrl();
+    console.log("[NavbarAuth] Capturing returnUrl:", returnUrl);
+    const authorizationUrl = await getOAuthAuthorizationUrl(
+      "signin",
+      oauthConfig,
+      returnUrl,
+    );
+    console.log("[NavbarAuth] OAuth URL:", authorizationUrl);
+    await new Promise((resolve) => setTimeout(resolve, 50));
     window.location.href = authorizationUrl;
   };
 
@@ -39,49 +58,66 @@ export function NavbarAuth() {
       window.location.href = `${homeUrl}docs/preface-agent-native`;
       return;
     }
-    const oauthUrl = await getOAuthAuthorizationUrl('signup', oauthConfig);
+    const returnUrl = getCurrentReturnUrl();
+    const oauthUrl = await getOAuthAuthorizationUrl(
+      "signup",
+      oauthConfig,
+      returnUrl,
+    );
     const signupUrl = `${authUrl}/auth/sign-up?redirect=${encodeURIComponent(oauthUrl)}`;
     window.location.href = signupUrl;
   };
 
   const getInitials = (name?: string, email?: string) => {
     if (name) {
-      return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+      return name
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2);
     }
-    return email ? email[0].toUpperCase() : '?';
+    return email ? email[0].toUpperCase() : "?";
   };
 
   const handleEditProfile = () => {
-    const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
+    const currentUrl =
+      typeof window !== "undefined" ? window.location.href : "";
     const profileUrl = `${authUrl}/account/profile?redirect=${encodeURIComponent(currentUrl)}`;
-    localStorage.setItem('ainative_refresh_on_return', 'true');
+    localStorage.setItem("ainative_refresh_on_return", "true");
     window.location.href = profileUrl;
   };
 
   useEffect(() => {
-    const shouldRefresh = localStorage.getItem('ainative_refresh_on_return');
-    if (shouldRefresh === 'true' && session?.user) {
-      localStorage.removeItem('ainative_refresh_on_return');
+    const shouldRefresh = localStorage.getItem("ainative_refresh_on_return");
+    if (shouldRefresh === "true" && session?.user) {
+      localStorage.removeItem("ainative_refresh_on_return");
       refreshUserData();
     }
   }, [session]);
 
   if (isLoading) {
-    return (
-      <div className="h-9 w-9 animate-pulse rounded-full bg-muted" />
-    );
+    return <div className="h-9 w-9 animate-pulse rounded-full bg-muted" />;
   }
 
   if (session?.user) {
-    const displayName = session.user.name || session.user.email.split('@')[0];
+    const displayName = session.user.name || session.user.email.split("@")[0];
     const initials = getInitials(session.user.name, session.user.email);
-    const software = session.user.softwareBackground ? session.user.softwareBackground.charAt(0).toUpperCase() + session.user.softwareBackground.slice(1) : null;
+    const software = session.user.softwareBackground
+      ? session.user.softwareBackground.charAt(0).toUpperCase() +
+        session.user.softwareBackground.slice(1)
+      : null;
     const hardware = session.user.hardwareTier;
-    const hardwareLabel = hardware === 'tier1' ? 'Windows PC' :
-      hardware === 'tier2' ? 'Mac' :
-        hardware === 'tier3' ? 'Linux' :
-          hardware === 'tier4' ? 'Chromebook/Web' :
-            hardware;
+    const hardwareLabel =
+      hardware === "tier1"
+        ? "Windows PC"
+        : hardware === "tier2"
+          ? "Mac"
+          : hardware === "tier3"
+            ? "Linux"
+            : hardware === "tier4"
+              ? "Chromebook/Web"
+              : hardware;
 
     return (
       <div className="flex items-center">
@@ -96,8 +132,12 @@ export function NavbarAuth() {
           <DropdownMenuContent className="w-56" align="end" forceMount>
             <DropdownMenuLabel className="font-normal">
               <div className="flex flex-col space-y-1">
-                <p className="text-sm font-medium leading-none">{displayName}</p>
-                <p className="text-xs leading-none text-muted-foreground">{session.user.email}</p>
+                <p className="text-sm font-medium leading-none">
+                  {displayName}
+                </p>
+                <p className="text-xs leading-none text-muted-foreground">
+                  {session.user.email}
+                </p>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -110,11 +150,17 @@ export function NavbarAuth() {
                 <DropdownMenuSeparator />
               </>
             )}
-            <DropdownMenuItem onClick={handleEditProfile} className="cursor-pointer">
+            <DropdownMenuItem
+              onClick={handleEditProfile}
+              className="cursor-pointer"
+            >
               <Settings className="mr-2 h-4 w-4" />
               <span>Edit Profile</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => signOut()} className="cursor-pointer text-red-500 focus:text-red-500">
+            <DropdownMenuItem
+              onClick={() => signOut()}
+              className="cursor-pointer text-red-500 focus:text-red-500"
+            >
               <LogOut className="mr-2 h-4 w-4" />
               <span>Sign out</span>
             </DropdownMenuItem>
@@ -126,12 +172,14 @@ export function NavbarAuth() {
 
   return (
     <div className="flex items-center gap-2">
-      <Button variant="ghost" onClick={handleSignIn} className="hidden sm:inline-flex">
+      <Button
+        variant="ghost"
+        onClick={handleSignIn}
+        className="hidden sm:inline-flex"
+      >
         Sign In
       </Button>
-      <Button onClick={handleSignUp}>
-        Sign Up
-      </Button>
+      <Button onClick={handleSignUp}>Sign Up</Button>
     </div>
   );
 }

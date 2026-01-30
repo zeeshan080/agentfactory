@@ -24,20 +24,20 @@ function generateCodeVerifier(): string {
 async function generateCodeChallenge(verifier: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(verifier);
-  const hash = await crypto.subtle.digest('SHA-256', data);
+  const hash = await crypto.subtle.digest("SHA-256", data);
   return base64UrlEncode(new Uint8Array(hash));
 }
 
 // Base64 URL encode (RFC 4648)
 function base64UrlEncode(buffer: Uint8Array): string {
-  let binary = '';
+  let binary = "";
   for (let i = 0; i < buffer.length; i++) {
     binary += String.fromCharCode(buffer[i]);
   }
   return btoa(binary)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 // OAuth config type for components to pass in
@@ -47,9 +47,19 @@ export interface OAuthConfig {
   redirectUri?: string;
 }
 
+// State payload for OAuth flow (encodes action + return URL)
+export interface OAuthStatePayload {
+  action: "signin" | "signup";
+  returnUrl?: string;
+}
+
 // OAuth2 Authorization URL builder with PKCE
 // Config should be passed from component using useDocusaurusContext
-export async function getOAuthAuthorizationUrl(state?: string, config?: OAuthConfig): Promise<string> {
+export async function getOAuthAuthorizationUrl(
+  action: "signin" | "signup" = "signin",
+  config?: OAuthConfig,
+  returnUrl?: string,
+): Promise<string> {
   const authUrl = config?.authUrl || DEFAULT_AUTH_URL;
   const clientId = config?.clientId || DEFAULT_CLIENT_ID;
 
@@ -63,16 +73,23 @@ export async function getOAuthAuthorizationUrl(state?: string, config?: OAuthCon
   // Store verifier in localStorage for token exchange
   // Note: Using localStorage instead of sessionStorage because sessionStorage
   // doesn't persist across full page navigations to different origins (auth server)
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('pkce_code_verifier', codeVerifier);
+  if (typeof window !== "undefined") {
+    localStorage.setItem("pkce_code_verifier", codeVerifier);
   }
+
+  // Encode action and return URL into state parameter
+  const statePayload: OAuthStatePayload = { action };
+  if (returnUrl) {
+    statePayload.returnUrl = returnUrl;
+  }
+  const stateString = btoa(JSON.stringify(statePayload));
 
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
     scope: "openid profile email",
-    state: state || Math.random().toString(36).substring(7),
+    state: stateString,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
@@ -80,9 +97,22 @@ export async function getOAuthAuthorizationUrl(state?: string, config?: OAuthCon
   return `${authUrl}/api/auth/oauth2/authorize?${params.toString()}`;
 }
 
+// Parse OAuth state parameter to extract action and return URL
+export function parseOAuthState(stateString: string): OAuthStatePayload | null {
+  try {
+    const decoded = atob(stateString);
+    return JSON.parse(decoded) as OAuthStatePayload;
+  } catch {
+    // Legacy state format or invalid - return null
+    return null;
+  }
+}
+
 // Token refresh function
-export async function refreshAccessToken(config?: OAuthConfig): Promise<string | null> {
-  const refreshToken = localStorage.getItem('ainative_refresh_token');
+export async function refreshAccessToken(
+  config?: OAuthConfig,
+): Promise<string | null> {
+  const refreshToken = localStorage.getItem("ainative_refresh_token");
   if (!refreshToken) return null;
 
   const authUrl = config?.authUrl || DEFAULT_AUTH_URL;
@@ -90,10 +120,10 @@ export async function refreshAccessToken(config?: OAuthConfig): Promise<string |
 
   try {
     const response = await fetch(`${authUrl}/api/auth/oauth2/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        grant_type: 'refresh_token',
+        grant_type: "refresh_token",
         refresh_token: refreshToken,
         client_id: clientId,
       }),
@@ -101,18 +131,18 @@ export async function refreshAccessToken(config?: OAuthConfig): Promise<string |
 
     if (response.ok) {
       const tokens = await response.json();
-      localStorage.setItem('ainative_access_token', tokens.access_token);
+      localStorage.setItem("ainative_access_token", tokens.access_token);
       if (tokens.refresh_token) {
-        localStorage.setItem('ainative_refresh_token', tokens.refresh_token);
+        localStorage.setItem("ainative_refresh_token", tokens.refresh_token);
       }
       // Store new ID token if provided (for JWKS verification)
       if (tokens.id_token) {
-        localStorage.setItem('ainative_id_token', tokens.id_token);
+        localStorage.setItem("ainative_id_token", tokens.id_token);
       }
       return tokens.access_token;
     }
   } catch (error) {
-    console.error('Token refresh failed:', error);
+    console.error("Token refresh failed:", error);
   }
   return null;
 }
