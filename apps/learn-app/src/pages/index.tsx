@@ -3,7 +3,6 @@ import clsx from "clsx";
 import Link from "@docusaurus/Link";
 import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import Layout from "@theme/Layout";
-import Heading from "@theme/Heading";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import Head from "@docusaurus/Head";
@@ -22,11 +21,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { authors } from "@/data/authors";
 import {
   Code,
-  Container,
-  Cpu,
-  Terminal,
   ArrowRight,
-  BookOpen,
   Layers,
   GitBranch,
   Bot,

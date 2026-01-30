@@ -1,0 +1,2 @@
+{"timestamp": "2026-01-30T10:59:28Z", "session_id": "36ea06f6-c148-4260-a71d-f9bbcb754487", "user": "mjunaidca", "branch": "official-chatkit-integration", "event": "tool_failure", "tool": "Bash", "attempted": "cd apps/learn-app && pnpm typecheck 2>&1 | head -20", "error": ""}
+{"timestamp": "2026-01-30T12:05:28Z", "session_id": "1088b668-bc47-4732-8808-1f168c388fcd", "user": "mjunaidca", "branch": "official-chatkit-integration", "event": "tool_failure", "tool": "Bash", "attempted": "cd apps/learn-app && pnpm exec tsc --noEmit 2>&1 | head -30", "error": ""}

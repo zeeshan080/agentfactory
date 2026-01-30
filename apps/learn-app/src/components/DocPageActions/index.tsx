@@ -209,6 +209,7 @@ const LoadingIcon = () => (
 );
 
 const TeachMeIcon = () => (
+const StudyModeIcon = () => (
   <svg
     className="doc-actions-icon"
     width="16"
@@ -223,6 +224,11 @@ const TeachMeIcon = () => (
   >
     <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
     <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+    {/* Graduation cap - symbolizes learning/study */}
+    <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+    <path d="M6 12v5c0 1.5 2.5 3 6 3s6-1.5 6-3v-5" />
+    {/* Small sparkle - AI element */}
+    <circle cx="20" cy="6" r="1.5" fill="currentColor" stroke="none" />
   </svg>
 );
 
@@ -347,6 +353,28 @@ export function DocPageActions() {
     ? chapterManifest?.chapters?.[chapterKey]
     : null;
 
+  // Determine if this is a content page (lesson) vs category landing page
+  // - Lessons: actual content files (NOT README.md)
+  // - Parts: category landing (README.md in part folder) - no button
+  // - Chapters: category landing (README.md in chapter folder) - no button
+  // - Special root pages (thesis, preface) ARE content pages
+  const pathSegments = docId.split("/").filter(Boolean);
+  const lastSegment = pathSegments[pathSegments.length - 1] || "";
+
+  // README files are category landing pages, not lessons
+  const isReadmePage = lastSegment.toLowerCase() === "readme";
+
+  // Special root pages that should show the button
+  const specialRootPages = ["thesis", "preface-agent-native"];
+  const isSpecialRootPage =
+    pathSegments.length === 1 && specialRootPages.includes(pathSegments[0]);
+
+  // A lesson page is:
+  // - 3+ segments AND not a README (e.g., part/chapter/lesson)
+  // - OR a special root page (thesis, preface)
+  const isLessonPage =
+    (pathSegments.length >= 3 && !isReadmePage) || isSpecialRootPage;
+
   // Detect platform for keyboard shortcut display
   const isMac =
     typeof navigator !== "undefined" &&
@@ -358,6 +386,7 @@ export function DocPageActions() {
   const isDev =
     typeof window !== "undefined" && window.location.hostname === "localhost";
   const isLoggedIn = isDev || (!authLoading && session?.user);
+  const isLoggedIn = !authLoading && session?.user;
 
   /**
    * Redirect to login page with return URL
@@ -374,6 +403,13 @@ export function DocPageActions() {
         { authUrl, clientId: oauthClientId },
         returnUrl,
       );
+      const returnUrl = window.location.href;
+      // Store return URL for after login
+      localStorage.setItem("auth_return_url", returnUrl);
+      const loginUrl = await getOAuthAuthorizationUrl(undefined, {
+        authUrl,
+        clientId: oauthClientId,
+      });
       window.location.href = loginUrl;
     } catch (err) {
       console.error("Failed to redirect to login:", err);
@@ -774,6 +810,19 @@ export function DocPageActions() {
                     <span>Teach Me</span>
                 </button>
             </Tooltip> */}
+      {/* Study Mode Button - Only shown on lesson pages for logged-in users */}
+      {isLessonPage && isLoggedIn && (
+        <Tooltip content="AI-powered Socratic learning" position="bottom">
+          <button
+            className="doc-page-actions-study-mode"
+            onClick={openPanel}
+            aria-label="Open Study Mode"
+          >
+            <StudyModeIcon />
+            <span>Study Mode</span>
+          </button>
+        </Tooltip>
+      )}
 
       {/* Split Button: Main action + Dropdown trigger */}
       <div

@@ -114,3 +114,11 @@ Frontend (React)                    Backend (Python)
 | Memory | SessionStorage | Server-side |
 | Code | ~500 lines | ~150 lines |
 | UI | @chatscope | OpenAI ChatKit |
+
+## Run the Docker image with .env                                        
+                                                                          
+> After building                                                         
+docker build -t study-mode-api:prod .                                    
+                                                                          
+> Run with .env file                                                     
+docker run --env-file .env -p 8000:8000 study-mode-api:prod    

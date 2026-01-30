@@ -1,0 +1,8 @@
+Explore the carfixer-agents-agentkit project at /Users/mjs/Documents/code/temp-devraftel/sam/carfixer-agents-agentkit
+
+Find:
+1. How Redis caching is implemented (look for redis, cache, caching patterns)
+2. Any caching on top of database queries
+3. The caching strategy/pattern they use
+
+Return file paths and key code snippets showing their caching approach.

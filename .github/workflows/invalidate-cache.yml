@@ -1,0 +1,157 @@
+# Invalidate Study Mode API Cache
+#
+# Purges Redis cache for lesson content when docs are updated.
+# This ensures the Study Mode API serves fresh content after pushes.
+#
+# Triggers:
+# - On push to main affecting learn-app docs
+# - Manual workflow_dispatch (can invalidate all or specific paths)
+#
+# Required secrets:
+# - STUDY_MODE_API_URL: Base URL of the Study Mode API
+# - ADMIN_SECRET: Secret for authenticating with /admin/invalidate-cache
+
+name: Invalidate Study Mode Cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/learn-app/docs/**/*.md"
+      - "apps/learn-app/docs/**/*.mdx"
+  workflow_dispatch:
+    inputs:
+      invalidate_all:
+        description: "Invalidate ALL cached content (not just changed files)"
+        type: boolean
+        default: false
+      specific_paths:
+        description: "Specific lesson paths to invalidate (comma-separated, e.g., '01-intro/welcome,02-agents/basics')"
+        type: string
+        required: false
+
+jobs:
+  invalidate:
+    name: Purge Content Cache
+    runs-on: ubuntu-latest
+    # Only run if API URL is configured
+    if: ${{ vars.CACHE_INVALIDATION_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Need previous commit to detect changes
+
+      - name: Get changed lesson paths
+        id: changed
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          # Get changed markdown files and convert to lesson paths
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'apps/learn-app/docs/**/*.md' 'apps/learn-app/docs/**/*.mdx')
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No content files changed"
+            echo "paths=[]" >> $GITHUB_OUTPUT
+            echo "count=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Convert file paths to lesson paths
+          # apps/learn-app/docs/01-intro/01-welcome.md -> 01-intro/01-welcome
+          LESSON_PATHS=$(echo "$CHANGED_FILES" | \
+            sed 's|apps/learn-app/docs/||g' | \
+            sed 's|\.mdx$||g' | \
+            sed 's|\.md$||g' | \
+            sort -u)
+
+          echo "Changed lesson paths:"
+          echo "$LESSON_PATHS"
+
+          # Convert to JSON array for API call
+          JSON_PATHS=$(echo "$LESSON_PATHS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "paths=$JSON_PATHS" >> $GITHUB_OUTPUT
+
+          # Count
+          COUNT=$(echo "$LESSON_PATHS" | wc -l | tr -d ' ')
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+      - name: Prepare paths for manual trigger
+        id: manual
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.specific_paths != '' }}
+        run: |
+          # Convert comma-separated paths to JSON array
+          PATHS="${{ github.event.inputs.specific_paths }}"
+          JSON_PATHS=$(echo "$PATHS" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
+          echo "paths=$JSON_PATHS" >> $GITHUB_OUTPUT
+
+      - name: Invalidate cache
+        env:
+          STUDY_MODE_API_URL: ${{ secrets.STUDY_MODE_API_URL }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+        run: |
+          if [ -z "$STUDY_MODE_API_URL" ]; then
+            echo "::error::STUDY_MODE_API_URL secret not configured"
+            exit 1
+          fi
+
+          if [ -z "$ADMIN_SECRET" ]; then
+            echo "::error::ADMIN_SECRET secret not configured"
+            exit 1
+          fi
+
+          # Determine what to invalidate
+          if [ "${{ github.event.inputs.invalidate_all }}" = "true" ]; then
+            echo "=== Invalidating ALL cached content ==="
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "$STUDY_MODE_API_URL/admin/invalidate-cache" \
+              -H "X-Admin-Secret: $ADMIN_SECRET" \
+              -H "Content-Type: application/json")
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ steps.manual.outputs.paths }}" ]; then
+            echo "=== Invalidating specific paths (manual) ==="
+            echo "Paths: ${{ steps.manual.outputs.paths }}"
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "$STUDY_MODE_API_URL/admin/invalidate-cache" \
+              -H "X-Admin-Secret: $ADMIN_SECRET" \
+              -H "Content-Type: application/json" \
+              -d '${{ steps.manual.outputs.paths }}')
+          elif [ "${{ steps.changed.outputs.count }}" = "0" ]; then
+            echo "No content changes detected, skipping cache invalidation"
+            exit 0
+          else
+            echo "=== Invalidating changed paths ==="
+            echo "Paths: ${{ steps.changed.outputs.paths }}"
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "$STUDY_MODE_API_URL/admin/invalidate-cache" \
+              -H "X-Admin-Secret: $ADMIN_SECRET" \
+              -H "Content-Type: application/json" \
+              -d '${{ steps.changed.outputs.paths }}')
+          fi
+
+          # Parse response
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "Response code: $HTTP_CODE"
+          echo "Response body: $BODY"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ Cache invalidation successful"
+          else
+            echo "::error::Cache invalidation failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Cache Invalidation Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.invalidate_all }}" = "true" ]; then
+            echo "**Mode:** Full invalidation (all content)" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "**Mode:** Manual (specific paths)" >> $GITHUB_STEP_SUMMARY
+            echo "**Paths:** ${{ github.event.inputs.specific_paths }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Mode:** Incremental (changed files)" >> $GITHUB_STEP_SUMMARY
+            echo "**Changed:** ${{ steps.changed.outputs.count }} lesson(s)" >> $GITHUB_STEP_SUMMARY
+          fi

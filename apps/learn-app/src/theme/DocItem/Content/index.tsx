@@ -8,17 +8,18 @@
  * which scans for .summary.md files at build time.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
-import Content from '@theme-original/DocItem/Content';
-import type ContentType from '@theme/DocItem/Content';
-import type { WrapperProps } from '@docusaurus/types';
-import { useDoc } from '@docusaurus/plugin-content-docs/client';
-import { usePluginData } from '@docusaurus/useGlobalData';
-import { useLocation } from '@docusaurus/router';
-import LessonContent from '../../../components/LessonContent';
-import ReactMarkdown from 'react-markdown';
-import ReadingProgress from '@/components/ReadingProgress';
-import DocPageActions from '@/components/DocPageActions';
+import React, { useState, useEffect, useRef } from "react";
+import Content from "@theme-original/DocItem/Content";
+import type ContentType from "@theme/DocItem/Content";
+import type { WrapperProps } from "@docusaurus/types";
+import { useDoc } from "@docusaurus/plugin-content-docs/client";
+import { usePluginData } from "@docusaurus/useGlobalData";
+import LessonContent from "../../../components/LessonContent";
+import ReactMarkdown from "react-markdown";
+import ReadingProgress from "@/components/ReadingProgress";
+import DocPageActions from "@/components/DocPageActions";
+import { useStudyMode } from "@/contexts/StudyModeContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { TeachMePanel } from '@/components/TeachMePanel';
 
 type Props = WrapperProps<typeof ContentType>;
@@ -31,9 +32,9 @@ function ReadingTime() {
 
   useEffect(() => {
     // Calculate reading time from article content
-    const article = document.querySelector('article');
+    const article = document.querySelector("article");
     if (article) {
-      const text = article.textContent || '';
+      const text = article.textContent || "";
       const words = text.trim().split(/\s+/).length;
       const minutes = Math.ceil(words / 200); // 200 words per minute
       setReadingTime(minutes);
@@ -44,7 +45,16 @@ function ReadingTime() {
 
   return (
     <div className="reading-time">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
         <circle cx="12" cy="12" r="10" />
         <polyline points="12 6 12 12 16 14" />
       </svg>
@@ -75,12 +85,12 @@ function BackToTopButton() {
       lastScrollY.current = currentScrollY;
     };
 
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
   const scrollToTop = () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   if (!visible) return null;
@@ -92,14 +102,21 @@ function BackToTopButton() {
       title="Back to top"
       aria-label="Scroll back to top"
     >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
         <path d="M18 15l-6-6-6 6" />
       </svg>
     </button>
   );
 }
-
-
 
 interface SummariesPluginData {
   summaries: Record<string, string>;
@@ -110,33 +127,35 @@ export default function ContentWrapper(props: Props): React.ReactElement {
 
   // Persist zen mode in localStorage
   const [zenMode, setZenMode] = React.useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('zenMode') === 'true';
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("zenMode") === "true";
     }
     return false;
   });
 
   React.useEffect(() => {
     if (zenMode) {
-      document.body.classList.add('zen-mode');
-      localStorage.setItem('zenMode', 'true');
+      document.body.classList.add("zen-mode");
+      localStorage.setItem("zenMode", "true");
     } else {
-      document.body.classList.remove('zen-mode');
-      localStorage.setItem('zenMode', 'false');
+      document.body.classList.remove("zen-mode");
+      localStorage.setItem("zenMode", "false");
     }
   }, [zenMode]);
 
   // Apply zen mode on mount (for SSR hydration)
   React.useEffect(() => {
-    if (localStorage.getItem('zenMode') === 'true') {
-      document.body.classList.add('zen-mode');
+    if (localStorage.getItem("zenMode") === "true") {
+      document.body.classList.add("zen-mode");
     }
   }, []);
 
   // Get summaries from global data (populated by docusaurus-summaries-plugin)
   let summaries: Record<string, string> = {};
   try {
-    const pluginData = usePluginData('docusaurus-summaries-plugin') as SummariesPluginData | undefined;
+    const pluginData = usePluginData("docusaurus-summaries-plugin") as
+      | SummariesPluginData
+      | undefined;
     summaries = pluginData?.summaries || {};
   } catch {
     // Plugin might not be loaded yet or doesn't exist
@@ -151,8 +170,8 @@ export default function ContentWrapper(props: Props): React.ReactElement {
 
   // Build the lookup key from doc metadata
   const metadata = doc.metadata;
-  const sourceDirName = metadata.sourceDirName || '';
-  const slug = metadata.slug || '';
+  const sourceDirName = metadata.sourceDirName || "";
+  const slug = metadata.slug || "";
 
   // The source path in doc metadata points to the markdown file
   // We need to construct the summary lookup key
@@ -160,19 +179,41 @@ export default function ContentWrapper(props: Props): React.ReactElement {
   const docId = metadata.id;
 
   // Debug log in development
-  if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
-    console.log('[DocItem/Content] Doc ID:', docId);
-    console.log('[DocItem/Content] Source dir:', sourceDirName);
-    console.log('[DocItem/Content] Slug:', slug);
-    console.log('[DocItem/Content] Available summaries:', Object.keys(summaries));
+  if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
+    console.log("[DocItem/Content] Doc ID:", docId);
+    console.log("[DocItem/Content] Source dir:", sourceDirName);
+    console.log("[DocItem/Content] Slug:", slug);
+    console.log(
+      "[DocItem/Content] Available summaries:",
+      Object.keys(summaries),
+    );
   }
 
   // Look up summary by doc ID (the key format matches how plugin stores them)
   const summary = summaries[docId];
 
   // Get lesson path for TeachMePanel
-  const location = useLocation();
-  const lessonPath = location.pathname.replace(/^\/docs\//, '').replace(/\/$/, '');
+  // Use metadata.source for the actual file path with numeric prefixes
+  // Format: @site/docs/01-Part/02-Chapter/03-lesson.md -> 01-Part/02-Chapter/03-lesson
+  const rawSource = (metadata as { source?: string }).source || "";
+  const lessonPath = rawSource
+    .replace(/^@site\/docs\//, "")
+    .replace(/\.(md|mdx)$/, "");
+
+  // Study mode controls
+  const { isOpen: isStudyModeOpen, openPanel } = useStudyMode();
+  const { session } = useAuth();
+  const isLoggedIn = !!session?.user;
+
+  // Determine if this is a content page vs category landing page
+  // - Lessons have 3+ path segments: part/chapter/lesson
+  // - Special root pages (thesis, preface) have 1 segment but ARE content pages
+  // - Parts have 1 segment (category landing - no panel)
+  // - Chapters have 2 segments (category landing - no panel)
+  const pathSegments = docId.split("/").filter(Boolean);
+  const specialRootPages = ["thesis", "preface"];
+  const isSpecialRootPage = pathSegments.length === 1 && specialRootPages.includes(pathSegments[0]);
+  const isLeafPage = pathSegments.length >= 3 || isSpecialRootPage;
 
   // If no summary, just render original content
   if (!summary) {
@@ -183,34 +224,78 @@ export default function ContentWrapper(props: Props): React.ReactElement {
           <ReadingTime />
           <DocPageActions />
         </div>
-        {/* Floating action buttons */}
-        <div className="floating-actions">
-          <BackToTopButton />
-          <button
-            onClick={() => setZenMode(!zenMode)}
-            className="zen-mode-toggle"
-            title={zenMode ? "Exit Focus Mode" : "Focus Mode"}
-            aria-label={zenMode ? "Exit Focus Mode" : "Enter Focus Mode"}
-          >
-            {zenMode ? (
-              // Exit: Grid/sidebar icon
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="7" height="7"></rect>
-                <rect x="14" y="3" width="7" height="7"></rect>
-                <rect x="14" y="14" width="7" height="7"></rect>
-                <rect x="3" y="14" width="7" height="7"></rect>
-              </svg>
-            ) : (
-              // Enter: Focus/center icon
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M3 12h4m10 0h4M12 3v4m0 10v4"></path>
-              </svg>
+        {/* Floating action buttons - hidden when study mode panel is open */}
+        {!isStudyModeOpen && (
+          <div className="floating-actions">
+            <BackToTopButton />
+            {/* Study Mode button - only for logged-in users on lesson pages */}
+            {isLoggedIn && isLeafPage && (
+              <button
+                onClick={openPanel}
+                className="study-mode-float"
+                title="Study Mode"
+                aria-label="Open Study Mode"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  {/* Graduation cap */}
+                  <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+                  <path d="M6 12v5c0 1.5 2.5 3 6 3s6-1.5 6-3v-5" />
+                </svg>
+              </button>
             )}
-          </button>
-        </div>
+            <button
+              onClick={() => setZenMode(!zenMode)}
+              className="zen-mode-toggle"
+              title={zenMode ? "Exit Focus Mode" : "Focus Mode"}
+              aria-label={zenMode ? "Exit Focus Mode" : "Enter Focus Mode"}
+            >
+              {zenMode ? (
+                // Exit: Grid/sidebar icon
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+              ) : (
+                // Enter: Focus/center icon
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path d="M3 12h4m10 0h4M12 3v4m0 10v4"></path>
+                </svg>
+              )}
+            </button>
+          </div>
+        )}
         <Content {...props} />
-        <TeachMePanel lessonPath={lessonPath} />
+        {isLeafPage && <TeachMePanel lessonPath={lessonPath} />}
       </>
     );
   }
@@ -236,36 +321,81 @@ export default function ContentWrapper(props: Props): React.ReactElement {
         <ReadingTime />
         <DocPageActions />
       </div>
-      {/* Floating action buttons */}
-      <div className="floating-actions">
-        <BackToTopButton />
-        <button
-          onClick={() => setZenMode(!zenMode)}
-          className="zen-mode-toggle"
-          title={zenMode ? "Exit Focus Mode" : "Focus Mode"}
-          aria-label={zenMode ? "Exit Focus Mode" : "Enter Focus Mode"}
-        >
-          {zenMode ? (
-            // Exit: Grid/sidebar icon
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="7" height="7"></rect>
-              <rect x="14" y="3" width="7" height="7"></rect>
-              <rect x="14" y="14" width="7" height="7"></rect>
-              <rect x="3" y="14" width="7" height="7"></rect>
-            </svg>
-          ) : (
-            // Enter: Focus/center icon
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M3 12h4m10 0h4M12 3v4m0 10v4"></path>
-            </svg>
+      {/* Floating action buttons - hidden when study mode panel is open */}
+      {!isStudyModeOpen && (
+        <div className="floating-actions">
+          <BackToTopButton />
+          {/* Study Mode button - only for logged-in users on lesson pages */}
+          {isLoggedIn && isLeafPage && (
+            <button
+              onClick={openPanel}
+              className="study-mode-float"
+              title="Study Mode"
+              aria-label="Open Study Mode"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                {/* Graduation cap */}
+                <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+                <path d="M6 12v5c0 1.5 2.5 3 6 3s6-1.5 6-3v-5" />
+              </svg>
+            </button>
           )}
-        </button>
-      </div>
+          <button
+            onClick={() => setZenMode(!zenMode)}
+            className="zen-mode-toggle"
+            title={zenMode ? "Exit Focus Mode" : "Focus Mode"}
+            aria-label={zenMode ? "Exit Focus Mode" : "Enter Focus Mode"}
+          >
+            {zenMode ? (
+              // Exit: Grid/sidebar icon
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="14" y="14" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+              </svg>
+            ) : (
+              // Enter: Focus/center icon
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M3 12h4m10 0h4M12 3v4m0 10v4"></path>
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
       <LessonContent summaryElement={summaryElement}>
         <Content {...props} />
+        {/* TODO: ASK ME ENALBE AFTER BACKEND DEP */}
       </LessonContent>
-      <TeachMePanel lessonPath={lessonPath} />
+      {isLeafPage && <TeachMePanel lessonPath={lessonPath} />}
     </>
   );
 }

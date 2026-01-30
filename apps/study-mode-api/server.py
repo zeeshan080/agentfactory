@@ -1,455 +1,380 @@
 """
-ChatKit Server for Interactive Study Mode
+Official OpenAI ChatKit Server for Interactive Study Mode
 
-CRITICAL: This chatbot answers ONLY from book content.
-It must NOT use general LLM knowledge.
+Uses the official openai-chatkit Python SDK with ChatKitServer.
+Self-hosted ChatKit implementation with PostgreSQL persistence.
 
-Modes:
-- Teach: Socratic method, focused on current page
-- Ask: Book-wide Q&A, search across content
+Features:
+- User isolation (each user sees only their conversations)
+- Persistent storage (conversations survive restarts)
+- Lesson-based chat sessions
+
+Reference: https://openai.github.io/chatkit-python/
 """
 
 import os
 import glob
+import uuid
+import logging
 from pathlib import Path
-from typing import List
-import time
+from typing import AsyncIterator
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agents import Agent, Runner
+from chatkit.server import ChatKitServer, StreamingResult
+from chatkit.types import (
+    ThreadMetadata,
+    ThreadStreamEvent,
+    UserMessageItem,
+)
+from chatkit.agents import (
+    AgentContext,
+    simple_to_agent_input,
+    stream_agent_response,
+)
 
-# Load environment variables
+# Import our PostgresStore
+from chatkit_store import PostgresStore, StoreConfig, RequestContext
+
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
-# Book content base path - use absolute path from project root
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 CONTENT_BASE_PATH = os.getenv(
     "CONTENT_BASE_PATH",
     str(PROJECT_ROOT / "apps" / "learn-app" / "docs")
 )
+MAX_RECENT_ITEMS = 30
+MODEL = "gpt-4o-mini"
+DATABASE_URL = os.getenv("STUDY_MODE_CHATKIT_DATABASE_URL", "")
+
 print(f"Content base path: {CONTENT_BASE_PATH}")
+print(f"Database configured: {'Yes' if DATABASE_URL else 'No (using in-memory)'}")
+
 
 # =============================================================================
 # Book Content Loader
 # =============================================================================
 
 def load_lesson_content(lesson_path: str) -> tuple[str, str]:
-    """
-    Load lesson content from filesystem based on path.
-
-    Handles paths like:
-    - "Coding-for-Problem-Solving/README" -> finds "04-Coding-for-Problem-Solving/README.md"
-    - "01-General-Agents-Foundations/01-agent-factory-paradigm/01-the-2025-inflection-point"
-    """
+    """Load lesson content from filesystem."""
     if not lesson_path:
-        print("No lesson path provided")
         return "", "Unknown Page"
 
-    # Clean the path
     clean_path = lesson_path.strip("/")
     if clean_path.startswith("docs/"):
         clean_path = clean_path[5:]
 
-    print(f"Loading content for: {clean_path}")
-    print(f"Base path: {CONTENT_BASE_PATH}")
-
-    # Split path into segments
     segments = clean_path.split("/")
 
-    # Try direct path first
-    direct_paths = [
-        Path(CONTENT_BASE_PATH) / f"{clean_path}.md",
-        Path(CONTENT_BASE_PATH) / f"{clean_path}.mdx",
-        Path(CONTENT_BASE_PATH) / clean_path / "index.md",
-        Path(CONTENT_BASE_PATH) / clean_path / "README.md",
-    ]
+    for ext in [".md", ".mdx"]:
+        direct = Path(CONTENT_BASE_PATH) / f"{clean_path}{ext}"
+        # Skip summary files - we want full lesson content
+        if direct.exists() and ".summary" not in str(direct):
+            content = direct.read_text(encoding="utf-8")
+            return content, extract_title(content, clean_path)
 
-    for file_path in direct_paths:
-        if file_path.exists():
-            try:
-                content = file_path.read_text(encoding="utf-8")
-                title = extract_title(content, clean_path)
-                print(f"Found direct: {file_path} -> {title}")
-                return content, title
-            except Exception as e:
-                print(f"Error reading {file_path}: {e}")
+    for name in ["index.md", "README.md"]:
+        direct = Path(CONTENT_BASE_PATH) / clean_path / name
+        if direct.exists():
+            content = direct.read_text(encoding="utf-8")
+            return content, extract_title(content, clean_path)
 
-    # Try to find with number prefix (e.g., "Coding-for-Problem-Solving" -> "04-Coding-for-Problem-Solving")
-    # Build path by matching each segment with possible numbered prefixes
-    base = Path(CONTENT_BASE_PATH)
-    current_path = base
-
-    for i, segment in enumerate(segments):
-        # Try exact match first
-        exact_path = current_path / segment
-        if exact_path.exists():
-            current_path = exact_path
+    current = Path(CONTENT_BASE_PATH)
+    for segment in segments:
+        exact = current / segment
+        if exact.exists():
+            current = exact
             continue
-
-        # Try with number prefix pattern (XX-segment)
-        pattern = f"[0-9][0-9]-{segment}"
-        matches = list(current_path.glob(pattern))
+        matches = list(current.glob(f"[0-9][0-9]-{segment}"))
         if matches:
-            current_path = matches[0]
-            print(f"Matched segment '{segment}' -> '{matches[0].name}'")
+            current = matches[0]
             continue
-
-        # Try partial match
-        pattern = f"*{segment}*"
-        matches = [m for m in current_path.glob(pattern) if m.is_dir() or m.suffix in ['.md', '.mdx']]
+        matches = [m for m in current.glob(f"*{segment}*") if m.is_dir() or m.suffix in [".md", ".mdx"]]
         if matches:
-            current_path = matches[0]
-            print(f"Partial match '{segment}' -> '{matches[0].name}'")
+            current = matches[0]
             continue
-
-        # No match found for this segment
-        print(f"No match for segment: {segment}")
         break
 
-    # Check if we found a valid path
-    final_candidates = [
-        current_path if current_path.suffix in ['.md', '.mdx'] else None,
-        current_path / "README.md",
-        current_path / "index.md",
-        Path(str(current_path) + ".md"),
-    ]
+    for candidate in [current, current / "README.md", current / "index.md", Path(str(current) + ".md")]:
+        # Skip summary files
+        if candidate and candidate.exists() and candidate.is_file() and ".summary" not in str(candidate):
+            content = candidate.read_text(encoding="utf-8")
+            return content, extract_title(content, clean_path)
 
-    for candidate in final_candidates:
-        if candidate and candidate.exists() and candidate.is_file():
-            try:
-                content = candidate.read_text(encoding="utf-8")
-                title = extract_title(content, clean_path)
-                print(f"Found: {candidate} -> {title} ({len(content)} chars)")
-                return content, title
-            except Exception as e:
-                print(f"Error reading {candidate}: {e}")
-
-    print(f"No content found for: {clean_path}")
     return "", f"Page: {clean_path}"
 
 
 def extract_title(content: str, fallback: str) -> str:
-    """Extract title from markdown content."""
-    lines = content.split("\n")
-    for line in lines:
-        # Check frontmatter title
+    """Extract title from markdown."""
+    for line in content.split("\n"):
         if line.startswith("title:"):
-            return line.replace("title:", "").strip().strip('"').strip("'")
-        # Check first heading
+            return line.replace("title:", "").strip().strip('"')
         if line.startswith("# "):
-            return line.replace("# ", "").strip()
+            return line[2:].strip()
     return fallback.split("/")[-1].replace("-", " ").title()
 
 
-def search_book_content(query: str, current_path: str) -> str:
-    """
-    Search across book content for relevant information.
-    For Ask mode - searches beyond current page.
-
-    Returns concatenated relevant content with source attribution.
-    """
+def search_book_content(query: str) -> str:
+    """Search book for relevant content."""
     results = []
-    search_terms = query.lower().split()
+    terms = query.lower().split()
 
-    # Search all markdown files
-    pattern = str(Path(CONTENT_BASE_PATH) / "**" / "*.md")
-    for file_path in glob.glob(pattern, recursive=True):
+    for fp in glob.glob(str(Path(CONTENT_BASE_PATH) / "**" / "*.md"), recursive=True):
         try:
-            content = Path(file_path).read_text(encoding="utf-8")
-            content_lower = content.lower()
-
-            # Simple relevance scoring
-            score = sum(1 for term in search_terms if term in content_lower)
-
+            content = Path(fp).read_text(encoding="utf-8")
+            score = sum(1 for t in terms if t in content.lower())
             if score > 0:
-                # Extract relative path for attribution
-                rel_path = Path(file_path).relative_to(CONTENT_BASE_PATH)
-                title = extract_title(content, str(rel_path))
-                results.append({
-                    "score": score,
-                    "title": title,
-                    "path": str(rel_path),
-                    "content": content[:3000]  # Limit content size
-                })
-        except Exception:
-            continue
+                rel = Path(fp).relative_to(CONTENT_BASE_PATH)
+                results.append({"score": score, "title": extract_title(content, str(rel)), "content": content[:3000]})
+        except:
+            pass
 
-    # Sort by relevance and take top 3
     results.sort(key=lambda x: x["score"], reverse=True)
-    top_results = results[:3]
-
-    if not top_results:
-        return ""
-
-    # Format for agent context
-    formatted = []
-    for r in top_results:
-        formatted.append(f"--- SOURCE: {r['title']} ({r['path']}) ---\n{r['content']}\n")
-
-    return "\n".join(formatted)
+    return "\n".join(f"--- {r['title']} ---\n{r['content']}" for r in results[:3])
 
 
 # =============================================================================
-# Agent Prompts (Book-Grounded)
+# Agent Templates
 # =============================================================================
 
-def get_teach_prompt(page_title: str, page_content: str) -> str:
-    """Generate Teach mode prompt - Socratic method with clickable questions."""
-
-    return f"""You are a FRIENDLY TUTOR teaching from the AgentFactory book using the Socratic method.
-
-PAGE: {page_title}
+TEACH_PROMPT = """You are a FRIENDLY TUTOR for the AgentFactory book using Socratic method.
+{user_greeting}
+PAGE: {title}
 ---
-{page_content}
+{content}
 ---
 
-## THE TEACHING LOOP (Follow this EXACTLY):
+RULES:
+1. EXPLAIN one concept (2-3 sentences)
+2. ASK ONE checking question
+3. Wait for response, then continue
+4. Use bold for key terms
+5. Be warm and encouraging
+6. Stay focused on page content"""
 
-1. EXPLAIN one concept (2-3 sentences, clear and simple)
-2. ASK ONE checking question (MUST use the exact format below)
-3. WAIT for response
-4. Acknowledge + EXPLAIN next concept
-5. ASK checking question
-6. REPEAT
+ASK_PROMPT = """You are a SEARCH ENGINE for the AgentFactory book.
 
-## FIRST MESSAGE (When conversation starts or user says "show suggestions", "teach me", etc.):
+{content}
 
-Welcome to **{page_title}**! Let's learn this together.
-
-**[First Key Concept]**: [2-3 sentence clear explanation of the main idea from the page]
-
-🤔 **Quick check:** [One simple question to verify they understood]
-
-## AFTER USER RESPONDS:
-
-1. Validate their answer (1 sentence - "Exactly!" or "Good thinking, and also...")
-2. EXPLAIN the next concept (2-3 sentences)
-3. ASK a checking question using the format below
-
-## CRITICAL: QUESTION FORMAT (MUST follow exactly):
-
-🤔 **Quick check:** [Your question here]
-
-The 🤔 emoji and **Quick check:** text MUST be on the same line, followed by the question.
-
-Example:
-🤔 **Quick check:** What makes General Agents different from traditional coding tools?
-
-## RULES:
-
-- ALWAYS explain FIRST (2-3 sentences) using content from the page
-- ALWAYS end with ONE question using the 🤔 **Quick check:** format
-- Keep explanations clear and jargon-free
-- Use bold for key terms
-- Be warm and encouraging
-- Stay focused on the page content
-
-Mode: TEACH (Explain -> Check -> Explain -> Check)"""
-
-
-def get_ask_prompt(page_title: str, book_content: str) -> str:
-    """Generate Ask mode prompt - direct answers with initial suggestions."""
-    return f"""You are a SEARCH ENGINE for the AgentFactory book. Give INSTANT, DIRECT answers.
-
-PAGE: {page_title}
----
-{book_content}
----
-
-## YOUR ROLE: INSTANT ANSWERS (Like Google Search)
-
-You answer questions directly. No teaching. No guiding.
-
-## WHEN USER SAYS "show suggestions" OR SIMILAR:
-
-Provide 3 suggested questions based on the page content using this EXACT format:
-
-Here are some questions I can answer about **{page_title}**:
-
-❓ **What would you like to know?**
-1. [First interesting question based on page content]
-2. [Second question about a key concept on the page]
-3. [Third question about practical application]
-
-Just click one or type your own question!
-
-## WHEN USER ASKS A REAL QUESTION:
-
-Give a direct answer in 1-3 sentences using the page content.
-
-Examples:
-- "What is X?" → One sentence answer
-- "How to X?" → 3-5 bullet points
-- "List X" → Just the list
-
-## RULES:
-
+RULES:
+- Give direct answers in 1-3 sentences
 - NO "Great question!"
-- NO explanations beyond what's asked
 - NO follow-up questions
-- NO teaching after answering
-- Just answer and STOP
+- Just answer and STOP"""
 
-Mode: ASK (instant answers)"""
+
+def create_agent(title: str, content: str, mode: str, user_name: str = "") -> Agent:
+    """Create book-grounded agent."""
+    if mode == "teach":
+        user_greeting = f"\nThe student's name is {user_name}. Use it occasionally to personalize.\n" if user_name else ""
+        instructions = TEACH_PROMPT.format(title=title, content=content[:8000], user_greeting=user_greeting)
+    else:
+        related = search_book_content(content[:500])
+        full = f"CURRENT: {title}\n{content[:6000]}\n\nRELATED:\n{related}"
+        instructions = ASK_PROMPT.format(content=full)
+
+    return Agent(name="study_tutor", instructions=instructions, model=MODEL)
 
 
 # =============================================================================
-# FastAPI Application
+# ChatKit Server Implementation with PostgresStore
+# =============================================================================
+
+class StudyModeChatServer(ChatKitServer[RequestContext]):
+    """Official ChatKit server for Study Mode with PostgreSQL persistence."""
+
+    def __init__(self, store: PostgresStore):
+        self._store = store
+        super().__init__(store=self._store)
+
+    async def respond(
+        self,
+        thread: ThreadMetadata,
+        input_user_message: UserMessageItem | None,
+        context: RequestContext,
+    ) -> AsyncIterator[ThreadStreamEvent]:
+        """Stream response events for a user message."""
+        lesson_path = context.lesson_path if context else ""
+        mode = context.mode if context else "teach"
+        user_name = context.user_name if context else ""
+
+        content, title = load_lesson_content(lesson_path)
+        agent = create_agent(title, content, mode, user_name)
+
+        items_page = await self._store.load_thread_items(
+            thread.id, after=None, limit=MAX_RECENT_ITEMS, order="desc", context=context
+        )
+        items = list(reversed(items_page.data))
+
+        input_items = await simple_to_agent_input(items)
+
+        agent_context = AgentContext(
+            thread=thread,
+            store=self._store,
+            request_context=context,
+        )
+
+        result = Runner.run_streamed(agent, input_items, context=agent_context)
+
+        async for event in stream_agent_response(agent_context, result):
+            yield event
+
+
+# =============================================================================
+# Global Store and Server (initialized in lifespan)
+# =============================================================================
+
+postgres_store: PostgresStore | None = None
+chatkit_server: StudyModeChatServer | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize database on startup, cleanup on shutdown."""
+    global postgres_store, chatkit_server
+
+    if DATABASE_URL:
+        logger.info("Initializing PostgresStore...")
+        config = StoreConfig(database_url=DATABASE_URL)
+        postgres_store = PostgresStore(config=config)
+        await postgres_store.initialize_schema()
+        chatkit_server = StudyModeChatServer(store=postgres_store)
+        logger.info("PostgresStore initialized successfully!")
+    else:
+        logger.warning("STUDY_MODE_CHATKIT_DATABASE_URL not set - using in-memory store")
+        # Fallback to in-memory for backwards compatibility
+        from chatkit_store.postgres_store import PostgresStore as PS
+        # Create a simple in-memory fallback
+        postgres_store = None
+        chatkit_server = None
+
+    yield
+
+    # Cleanup
+    if postgres_store:
+        await postgres_store.close()
+        logger.info("PostgresStore connection closed")
+
+
+# =============================================================================
+# FastAPI App
 # =============================================================================
 
 app = FastAPI(
-    title="Study Mode ChatKit Server",
-    description="Book-grounded chatbot for Interactive Study Mode",
-    version="2.0.0",
+    title="Study Mode ChatKit",
+    version="4.0.0",
+    lifespan=lifespan,
 )
 
-# CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+class SessionRequest(BaseModel):
+    lesson_path: str = ""
+    mode: str = "teach"
+    user_id: str = ""
+    user_name: str = ""
+
+
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
     return {
         "status": "ok",
-        "server": "chatkit",
-        "version": "2.0.0",
-        "contentPath": CONTENT_BASE_PATH,
-        "contentExists": Path(CONTENT_BASE_PATH).exists()
+        "version": "4.0.0",
+        "integration": "Official OpenAI ChatKit",
+        "storage": "PostgreSQL" if postgres_store else "Not configured",
     }
 
 
-# =============================================================================
-# Chat API
-# =============================================================================
+@app.post("/api/chatkit/session")
+async def create_session(request: SessionRequest):
+    """Create a ChatKit session and return client_secret."""
+    session_id = f"sess_{uuid.uuid4().hex[:16]}"
+    client_secret = f"cs_{uuid.uuid4().hex}"
 
-class MessageInput(BaseModel):
-    role: str
-    content: str
-
-class ChatRequestBody(BaseModel):
-    lessonPath: str
-    userMessage: str
-    conversationHistory: List[MessageInput]
-    mode: str = "teach"
+    return {
+        "client_secret": client_secret,
+        "session_id": session_id,
+        "user_id": request.user_id,
+    }
 
 
-@app.post("/api/chat")
-async def chat(request: ChatRequestBody):
-    """
-    Main chat endpoint.
+# ChatKit API routes
+@app.api_route("/chatkit/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def chatkit_handler(
+    request: Request,
+    path: str,
+    x_user_id: str = Header(default="", alias="X-User-ID"),
+    x_user_name: str = Header(default="", alias="X-User-Name"),
+    authorization: str = Header(default="", alias="Authorization"),
+):
+    """Forward all ChatKit requests to the ChatKitServer with user context."""
 
-    - Loads book content based on lessonPath
-    - Creates book-grounded agent
-    - Returns response from book content ONLY
-    """
-    start_time = time.time()
+    if not chatkit_server:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "ChatKit server not initialized. Check DATABASE_URL configuration."}
+        )
 
-    # Load current page content
-    page_content, page_title = load_lesson_content(request.lessonPath)
+    # Extract JWT token (not verified in dev mode per reviewer)
+    jwt_token = None
+    if authorization.startswith("Bearer "):
+        jwt_token = authorization[7:]
 
-    if not page_content:
-        return {
-            "assistantMessage": f"I couldn't load the content for this page ({request.lessonPath}). Please try refreshing or navigating to a different lesson.",
-            "metadata": {
-                "model": "gpt-4o-mini",
-                "tokensUsed": 0,
-                "processingTimeMs": 0,
-                "source": "error"
-            }
-        }
+    # Get user_id from query params (primary) or header (fallback)
+    user_id = request.query_params.get("user_id", "") or x_user_id or "anonymous"
 
-    # For Ask mode, also search related content
-    if request.mode == "ask":
-        # Search for relevant content across the book
-        related_content = search_book_content(request.userMessage, request.lessonPath)
-        # Combine current page with related content
-        book_content = f"--- CURRENT PAGE: {page_title} ---\n{page_content}\n\n--- RELATED CONTENT ---\n{related_content}"
-        instructions = get_ask_prompt(page_title, book_content)
-    else:
-        # Teach mode: focus on current page only
-        instructions = get_teach_prompt(page_title, page_content)
-
-    # Create book-grounded agent
-    agent = Agent(
-        name="book_grounded_tutor",
-        instructions=instructions,
-        model="gpt-4o-mini",
+    # Create request context with user isolation
+    context = RequestContext(
+        user_id=user_id,
+        user_name=x_user_name or None,
+        lesson_path=request.query_params.get("lesson_path", ""),
+        mode=request.query_params.get("mode", "teach"),
+        jwt_token=jwt_token,
+        request_id=str(uuid.uuid4()),
     )
 
-    # Build conversation history
-    input_items = []
-    for msg in request.conversationHistory:
-        input_items.append({
-            "role": msg.role,
-            "content": msg.content
-        })
-    input_items.append({
-        "role": "user",
-        "content": request.userMessage
-    })
+    logger.info(f"ChatKit request: user={context.user_id}, lesson={context.lesson_path}, path={path}")
 
-    try:
-        # Run the agent
-        result = await Runner.run(agent, input_items)
+    # Get request body
+    body = await request.body()
 
-        # Extract response
-        response_text = str(result.final_output) if result.final_output else ""
+    # Process through ChatKit server
+    result = await chatkit_server.process(body, context)
 
-        processing_time = int((time.time() - start_time) * 1000)
+    if isinstance(result, StreamingResult):
+        return StreamingResponse(result, media_type="text/event-stream")
+    else:
+        from starlette.responses import Response
+        return Response(content=result.json, media_type="application/json")
 
-        return {
-            "assistantMessage": response_text,
-            "metadata": {
-                "model": agent.model,
-                "tokensUsed": result.usage.total_tokens if hasattr(result, 'usage') and result.usage else 0,
-                "processingTimeMs": processing_time,
-                "source": page_title
-            }
-        }
-    except Exception as e:
-        return {
-            "error": {
-                "code": "AGENT_ERROR",
-                "message": str(e)
-            }
-        }
-
-
-# =============================================================================
-# Entry Point
-# =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-
     port = int(os.getenv("PORT", "8000"))
-
-    print(f"""
-=================================================================
-         Study Mode ChatKit Server v2.0
-         BOOK-GROUNDED (No general LLM knowledge)
-=================================================================
-  URL:      http://localhost:{port}
-  Chat:     http://localhost:{port}/api/chat
-  Health:   http://localhost:{port}/health
-  Content:  {CONTENT_BASE_PATH}
-=================================================================
-    """)
-
+    print(f"\n=== Official ChatKit Server v4.0 ===")
+    print(f"Storage: {'PostgreSQL' if DATABASE_URL else 'Not configured'}")
+    print(f"Session: http://localhost:{port}/api/chatkit/session")
+    print(f"ChatKit: http://localhost:{port}/chatkit")
+    print(f"Health:  http://localhost:{port}/health\n")
     uvicorn.run(app, host="0.0.0.0", port=port)

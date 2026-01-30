@@ -1,0 +1,84 @@
+# =============================================================================
+# Docker Compose - Node.js Local Development
+# =============================================================================
+# Usage: docker compose up --build
+# Hot-reload: Edit code locally, changes reflect immediately
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        NODE_VERSION: "22"
+    ports:
+      - "3000:3000"
+    volumes:
+      # Source code for hot-reload
+      - .:/app
+      # Preserve node_modules from container
+      - /app/node_modules
+      # Next.js build cache
+      - nextjs_cache:/app/.next/cache
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+
+      # Database
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/app
+
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+
+      # Auth (example)
+      - BETTER_AUTH_SECRET=dev-secret-change-in-production
+      - BETTER_AUTH_URL=http://localhost:3000
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ======================== PostgreSQL ========================
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ======================== Redis ========================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  nextjs_cache:

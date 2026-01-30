@@ -1,603 +1,380 @@
 /**
- * TeachMePanel Component
+ * TeachMePanel Component - Official OpenAI ChatKit Integration
  *
- * Main slide-out chat panel for Interactive Study Mode
- * Uses @chatscope/chat-ui-kit-react for polished chat UI
- * Renders markdown content to match book styling
+ * Uses @openai/chatkit-react for the chat UI with Shadcn Sheet for the panel.
+ * Connected to our self-hosted ChatKit server for book-grounded responses.
+ *
+ * Features:
+ * - Socratic Teaching Mode (teach) - explains step-by-step, asks checking questions
+ * - Quick Ask Mode (ask) - direct answers via text selection
+ * - Text selection "Ask" button for quick questions
+ *
+ * Reference: https://github.com/openai/openai-chatkit-starter-app
  */
 
-import React, { useCallback, useEffect, useRef, useMemo } from 'react';
-import {
-  MainContainer,
-  ChatContainer,
-  MessageList,
-  Message,
-  MessageInput,
-  TypingIndicator,
-  Avatar,
-  ConversationHeader,
-} from '@chatscope/chat-ui-kit-react';
-import '@chatscope/chat-ui-kit-styles/dist/default/styles.min.css';
-import ReactMarkdown from 'react-markdown';
+import React, { useState, useMemo, useCallback, useEffect } from "react";
+import { ChatKit, useChatKit } from "@openai/chatkit-react";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
+import { useStudyMode } from "../../contexts/StudyModeContext";
+import { useAuth } from "../../contexts/AuthContext";
+import { Sheet, SheetContent, SheetClose } from "@/components/ui/sheet";
+import { X } from "lucide-react";
+import styles from "./styles.module.css";
 
-import { useStudyMode } from '../../contexts/StudyModeContext';
-import { useStudyModeAPI } from './useStudyModeAPI';
-import { ModeToggle } from './ModeToggle';
-import styles from './styles.module.css';
+// Fallback user ID for anonymous users (not logged in)
+function getAnonymousUserId(): string {
+  if (typeof window === "undefined") return "anonymous";
+
+  let userId = localStorage.getItem("study_mode_user_id");
+  if (!userId) {
+    userId = `anon_${Math.random().toString(36).substring(2, 15)}`;
+    localStorage.setItem("study_mode_user_id", userId);
+  }
+  return userId;
+}
+
+// Chat mode type
+type ChatMode = "teach" | "ask";
+
+// Build URL with lesson path, user info, and mode
+function getChatKitUrl(
+  apiBase: string,
+  lessonPath: string,
+  userId: string,
+  mode: ChatMode = "teach",
+  userName?: string,
+): string {
+  const params = new URLSearchParams();
+  params.set("mode", mode);
+  params.set("user_id", userId);
+  if (userName) {
+    params.set("user_name", userName);
+  }
+  if (lessonPath) {
+    params.set("lesson_path", lessonPath);
+  }
+  return `${apiBase}/chatkit?${params.toString()}`;
+}
+
+interface TeachMePanelProps {
+  lessonPath: string;
+}
 
 /**
- * Render markdown content with book-matching styles
+ * Inner ChatKit wrapper with user context
  */
-function MarkdownContent({ content }: { content: string }) {
+function ChatKitWrapper({
+  lessonPath,
+  lessonTitle,
+  apiBase,
+  domainKey,
+  mode = "teach",
+  initialMessage,
+  onSendMessage,
+}: {
+  lessonPath: string;
+  lessonTitle: string;
+  apiBase: string;
+  domainKey: string;
+  mode?: ChatMode;
+  initialMessage?: string;
+  onSendMessage?: (sendFn: (text: string) => Promise<void>) => void;
+}) {
+  const { session } = useAuth();
+
+  // Use authenticated user ID if available, otherwise anonymous
+  const userId = useMemo(() => {
+    if (session?.user?.id) {
+      return session.user.id;
+    }
+    return getAnonymousUserId();
+  }, [session?.user?.id]);
+
+  // Get user's display name from auth context
+  const userName = useMemo(() => {
+    if (session?.user?.name) {
+      return session.user.name;
+    }
+    if (session?.user?.email) {
+      return session.user.email.split("@")[0];
+    }
+    return undefined;
+  }, [session?.user?.name, session?.user?.email]);
+
+  const apiUrl = useMemo(
+    () => getChatKitUrl(apiBase, lessonPath, userId, mode, userName),
+    [apiBase, lessonPath, userId, mode, userName],
+  );
+
+  // Custom fetch that injects Authorization header with JWT token
+  // Must use ID token (JWT format) not access token (may be opaque)
+  const authenticatedFetch = useCallback(
+    async (input: RequestInfo | URL, options?: RequestInit) => {
+      // Priority: ID token from localStorage (JWT format required by backend)
+      const token = localStorage.getItem("ainative_id_token");
+
+      // Debug logging - ALWAYS log to see what's happening
+      console.log("[TeachMePanel] ===== authenticatedFetch called =====");
+      console.log("[TeachMePanel] ainative_id_token:", token ? "EXISTS" : "NULL/MISSING");
+      console.log("[TeachMePanel] ainative_access_token:", localStorage.getItem("ainative_access_token") ? "EXISTS" : "NULL/MISSING");
+      if (token) {
+        console.log("[TeachMePanel] Token preview:", token.substring(0, 50) + "...");
+        console.log("[TeachMePanel] Token parts (should be 3):", token.split(".").length);
+      } else {
+        console.log("[TeachMePanel] WARNING: No ID token found! User may not be logged in properly.");
+      }
+      console.log("[TeachMePanel] Options headers from ChatKit:", options?.headers);
+
+      const response = await fetch(input, {
+        ...options,
+        headers: {
+          ...options?.headers,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "X-User-ID": userId,
+          ...(userName ? { "X-User-Name": userName } : {}),
+        },
+      });
+
+      console.log("[TeachMePanel] Response status:", response.status);
+      return response;
+    },
+    [userId, userName],
+  );
+
+  const { control, sendUserMessage } = useChatKit({
+    api: {
+      url: apiUrl,
+      domainKey,
+      fetch: authenticatedFetch,
+    },
+    composer: {
+      placeholder:
+        mode === "teach"
+          ? "Ask me anything about this lesson..."
+          : "Ask a quick question...",
+      attachments: { enabled: false },
+    },
+    startScreen: {
+      greeting:
+        mode === "teach"
+          ? `Let's explore ${lessonTitle}`
+          : `Quick answers about ${lessonTitle}`,
+      prompts:
+        mode === "teach"
+          ? [
+              {
+                icon: "circle-question",
+                label: "What should I understand?",
+                prompt:
+                  "What are the key things I should understand from this lesson? Ask me questions to check my understanding.",
+              },
+              {
+                icon: "lightbulb",
+                label: "Walk me through it",
+                prompt:
+                  "Walk me through the main concept step by step. Pause to ask if I understand before moving on.",
+              },
+              {
+                icon: "circle-question",
+                label: "Help me think about this",
+                prompt:
+                  "Help me think through this topic. What questions should I be asking myself?",
+              },
+              {
+                icon: "lightbulb",
+                label: "Quiz me",
+                prompt:
+                  "Quiz me on this topic to test my understanding. Ask one question at a time.",
+              },
+            ]
+          : [
+              {
+                icon: "circle-question",
+                label: "Quick summary",
+                prompt: "Give me a quick summary in 2-3 sentences",
+              },
+              {
+                icon: "lightbulb",
+                label: "Define this",
+                prompt: "Define this concept briefly",
+              },
+            ],
+    },
+  });
+
+  // Expose sendUserMessage to parent for Ask button
+  useEffect(() => {
+    if (onSendMessage && sendUserMessage) {
+      onSendMessage(async (text: string) => {
+        await sendUserMessage({ text, newThread: false });
+      });
+    }
+  }, [onSendMessage, sendUserMessage]);
+
+  // Send initial message if provided (for Ask feature)
+  // Note: initialMessage is cleared by parent after sending via onInitialMessageSent callback
+  useEffect(() => {
+    if (initialMessage && sendUserMessage) {
+      sendUserMessage({ text: initialMessage, newThread: true });
+    }
+  }, [initialMessage, sendUserMessage]);
+
   return (
-    <div className={styles.markdownContent}>
-      <ReactMarkdown
-        components={{
-          // Custom renderers to match book styling
-          p: ({ children }) => <p className={styles.mdParagraph}>{children}</p>,
-          strong: ({ children }) => <strong className={styles.mdBold}>{children}</strong>,
-          em: ({ children }) => <em className={styles.mdItalic}>{children}</em>,
-          ul: ({ children }) => <ul className={styles.mdList}>{children}</ul>,
-          ol: ({ children }) => <ol className={styles.mdOrderedList}>{children}</ol>,
-          li: ({ children }) => <li className={styles.mdListItem}>{children}</li>,
-          h3: ({ children }) => <h3 className={styles.mdHeading}>{children}</h3>,
-          h4: ({ children }) => <h4 className={styles.mdSubheading}>{children}</h4>,
-          code: ({ children }) => <code className={styles.mdCode}>{children}</code>,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+    <div className={styles.chatWrapper}>
+      <ChatKit control={control} className={styles.chatKit} />
     </div>
   );
 }
 
-/**
- * Parse message content to extract clickable topics/questions
- * Returns { mainContent: string, clickables: [], label: string }
- */
-function parseMessageForClickables(content: string): {
-  mainContent: string;
-  clickables: { text: string; type: 'topic' | 'question' }[];
-  label: string;
-} {
-  const clickables: { text: string; type: 'topic' | 'question' }[] = [];
-  let mainContent = content;
-  let label = '';
-
-  // NEW: "Quick check:" format: 🤔 **Quick check:** [question]
-  const quickCheckMatch = content.match(/🤔\s*\*\*Quick check:\*\*\s*([^\n]+)/i);
-  if (quickCheckMatch) {
-    const question = quickCheckMatch[1].trim();
-    if (question) {
-      label = '🤔 Quick check:';
-      clickables.push({ text: question, type: 'topic' });
-      // Remove the quick check line from main content
-      mainContent = content.replace(/🤔\s*\*\*Quick check:\*\*\s*[^\n]+/i, '').trim();
-    }
-  }
-
-  // Single question format: 🤔 **[Question here?]**
-  if (clickables.length === 0) {
-    const singleSocraticMatch = content.match(/🤔\s*\*\*([^*]+\?)\*\*/);
-    if (singleSocraticMatch) {
-      const question = singleSocraticMatch[1].trim();
-      // Make sure it's a real question, not a section header
-      if (question && !question.includes(':') && question.endsWith('?')) {
-        label = '🤔 Your turn to think:';
-        clickables.push({ text: question, type: 'topic' });
-        // Remove just the question line from main content
-        mainContent = content.replace(/🤔\s*\*\*[^*]+\?\*\*/, '').trim();
-        // Also remove the optional "(Just share your thoughts...)" line
-        mainContent = mainContent.replace(/\(Just share your thoughts[^)]*\)/i, '').trim();
-      }
-    }
-  }
-
-  // Legacy: Pattern for "Think about this:" (Teach mode Socratic questions with bullets)
-  if (clickables.length === 0) {
-    const socraticMatch = content.match(/🤔\s*\*\*Think about this:\*\*:?\s*([\s\S]*?)(?=\n\n|$)/i);
-    if (socraticMatch) {
-      label = '🤔 Think about this:';
-      const socraticSection = socraticMatch[1];
-      // Extract bullet points (• or -)
-      const bulletPoints = socraticSection.match(/[•\-]\s*([^\n]+)/g);
-      if (bulletPoints) {
-        bulletPoints.forEach(bp => {
-          const text = bp.replace(/^[•\-]\s*/, '').trim();
-          if (text) {
-            clickables.push({ text, type: 'topic' });
-          }
-        });
-      }
-      // Remove the Socratic section from main content
-      mainContent = content.replace(/🤔\s*\*\*Think about this:\*\*:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-    }
-  }
-
-  // Legacy: Pattern for "Let me check:" (Teach mode opening Socratic question)
-  const checkMatch = content.match(/🤔\s*\*\*Let me check:\*\*:?\s*([\s\S]*?)(?=\n\n|$)/i);
-  if (checkMatch && clickables.length === 0) {
-    label = '🤔 Let me check:';
-    const checkSection = checkMatch[1];
-    // Extract bullet points or single question
-    const bulletPoints = checkSection.match(/[•\-]\s*([^\n]+)/g);
-    if (bulletPoints) {
-      bulletPoints.forEach(bp => {
-        const text = bp.replace(/^[•\-]\s*/, '').trim();
-        if (text) {
-          clickables.push({ text, type: 'topic' });
-        }
-      });
-    } else {
-      // Single question without bullets
-      const singleQuestion = checkSection.trim();
-      if (singleQuestion) {
-        clickables.push({ text: singleQuestion, type: 'topic' });
-      }
-    }
-    // Remove the check section from main content
-    mainContent = content.replace(/🤔\s*\*\*Let me check:\*\*:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-  }
-
-  // Legacy: Pattern for "Do you also want to know about?" (Teach mode topics)
-  const topicsMatch = content.match(/🤔\s*\*\*Do you also want to know about\?\*\*:?\s*([\s\S]*?)(?=\n\n|$)/i);
-  if (topicsMatch && clickables.length === 0) {
-    label = '🤔 Do you also want to know about?';
-    const topicsSection = topicsMatch[1];
-    // Extract bullet points (• or -)
-    const bulletPoints = topicsSection.match(/[•\-]\s*([^\n]+)/g);
-    if (bulletPoints) {
-      bulletPoints.forEach(bp => {
-        const text = bp.replace(/^[•\-]\s*/, '').trim();
-        if (text) {
-          clickables.push({ text, type: 'topic' });
-        }
-      });
-    }
-    // Remove the topics section from main content
-    mainContent = content.replace(/🤔\s*\*\*Do you also want to know about\?\*\*:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-  }
-
-  // Pattern for "What would you like to know?" (Ask mode questions) - handles with or without bold
-  const questionsMatch = content.match(/❓\s*\*{0,2}What would you like to know\??\*{0,2}:?\s*([\s\S]*?)(?=\n\n|$)/i);
-  if (questionsMatch && clickables.length === 0) {
-    label = '❓ What would you like to know?';
-    const questionsSection = questionsMatch[1];
-    // Extract numbered items (1. 2. 3.)
-    const numberedItems = questionsSection.match(/\d+\.\s*([^\n]+)/g);
-    if (numberedItems) {
-      numberedItems.forEach(item => {
-        const text = item.replace(/^\d+\.\s*/, '').trim();
-        if (text && !text.startsWith('[')) {  // Skip template placeholders
-          clickables.push({ text, type: 'question' });
-        }
-      });
-    }
-    // Also try bullet points if no numbered items found
-    if (clickables.length === 0) {
-      const bulletPoints = questionsSection.match(/[•\-]\s*([^\n]+)/g);
-      if (bulletPoints) {
-        bulletPoints.forEach(bp => {
-          const text = bp.replace(/^[•\-]\s*/, '').trim();
-          if (text && !text.startsWith('[')) {
-            clickables.push({ text, type: 'question' });
-          }
-        });
-      }
-    }
-    // Remove the questions section from main content
-    mainContent = mainContent.replace(/❓\s*\*{0,2}What would you like to know\??\*{0,2}:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-  }
-
-  // Pattern for "What else would you like to know?" (Ask mode follow-up)
-  const followUpMatch = content.match(/🤔\s*\*{0,2}What else would you like to know\??\*{0,2}:?\s*([\s\S]*?)(?=\n\n|$)/i);
-  if (followUpMatch && clickables.length === 0) {
-    label = '🤔 What else would you like to know?';
-    const followUpSection = followUpMatch[1];
-    const bulletPoints = followUpSection.match(/[•\-]\s*([^\n]+)/g);
-    if (bulletPoints) {
-      bulletPoints.forEach(bp => {
-        const text = bp.replace(/^[•\-]\s*/, '').trim();
-        if (text && !text.startsWith('[')) {
-          clickables.push({ text, type: 'question' });
-        }
-      });
-    }
-    mainContent = mainContent.replace(/🤔\s*\*{0,2}What else would you like to know\??\*{0,2}:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-  }
-
-  // Also support old formats for backward compatibility
-  if (clickables.length === 0) {
-    // Old topic format
-    const oldTopicsMatch = content.match(/📚\s*\*\*Related topics[^*]*\*\*:?\s*([\s\S]*?)(?=\n\n|$)/i);
-    if (oldTopicsMatch) {
-      label = '🤔 Do you also want to know about?';
-      const topicsSection = oldTopicsMatch[1];
-      const bulletPoints = topicsSection.match(/[•\-]\s*([^\n]+)/g);
-      if (bulletPoints) {
-        bulletPoints.forEach(bp => {
-          const text = bp.replace(/^[•\-]\s*/, '').trim();
-          if (text) clickables.push({ text, type: 'topic' });
-        });
-      }
-      mainContent = content.replace(/📚\s*\*\*Related topics[^*]*\*\*:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-    }
-
-    // Old question format
-    const oldQuestionsMatch = content.match(/💡\s*\*\*Questions[^*]*\*\*:?\s*([\s\S]*?)(?=\n\n|$)/i);
-    if (oldQuestionsMatch) {
-      label = '❓ What would you like to know?';
-      const questionsSection = oldQuestionsMatch[1];
-      const numberedItems = questionsSection.match(/\d+\.\s*([^\n]+)/g);
-      if (numberedItems) {
-        numberedItems.forEach(item => {
-          const text = item.replace(/^\d+\.\s*/, '').trim();
-          if (text) clickables.push({ text, type: 'question' });
-        });
-      }
-      mainContent = mainContent.replace(/💡\s*\*\*Questions[^*]*\*\*:?\s*[\s\S]*?(?=\n\n|$)/i, '').trim();
-    }
-  }
-
-  return { mainContent, clickables, label };
-}
-
-interface TeachMePanelProps {
-  /** Current lesson path for context */
-  lessonPath: string;
-}
-
 export function TeachMePanel({ lessonPath }: TeachMePanelProps) {
-  const {
-    isOpen,
-    mode,
-    isLoading,
-    error,
-    closePanel,
-    setMode,
-    getCurrentConversation,
-    clearConversation,
-    setError,
-  } = useStudyMode();
+  const { siteConfig } = useDocusaurusContext();
+  const { isOpen, closePanel, openPanel } = useStudyMode();
+  const { session } = useAuth();
+  const [chatKey, setChatKey] = useState(0);
+  const [mode, setMode] = useState<ChatMode>("teach");
+  const [initialMessage, setInitialMessage] = useState<string | undefined>();
 
-  const { sendMessage } = useStudyModeAPI();
+  // Text selection state for Ask feature
+  const [selectedText, setSelectedText] = useState("");
+  const [selectionPosition, setSelectionPosition] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
 
-  // Get current conversation for this lesson + mode (separate conversations per mode)
-  const conversationKey = `${lessonPath}:${mode}`;
-  const conversation = getCurrentConversation(conversationKey);
+  // Auth check - only show for logged-in users
+  const isLoggedIn = !!session?.user;
 
-  // Ref for message list container to control scrolling
-  const messageListRef = useRef<HTMLDivElement>(null);
-  const prevMessageCountRef = useRef(0);
+  // Get Study Mode API URL from Docusaurus config
+  const studyModeApiUrl =
+    (siteConfig.customFields?.studyModeApiUrl as string) ||
+    "http://localhost:8000";
 
-  // Handle sending messages (use conversationKey for mode-specific storage)
-  const handleSend = useCallback((text: string) => {
-    if (text.trim()) {
-      sendMessage(lessonPath, text.trim(), `${lessonPath}:${mode}`);
-    }
-  }, [lessonPath, mode, sendMessage]);
+  // Get ChatKit domain key from config (register at OpenAI for production)
+  const chatkitDomainKey =
+    (siteConfig.customFields?.chatkitDomainKey as string)?.trim() ||
+    "domain_pk_localhost_dev";
 
-  // Handle clearing conversation (clears current mode's conversation only)
-  const handleClear = useCallback(() => {
-    clearConversation(`${lessonPath}:${mode}`);
-  }, [lessonPath, mode, clearConversation]);
+  // Extract lesson title for personalized greeting
+  const lessonTitle = useMemo(() => {
+    const parts = lessonPath.split("/");
+    const lastPart = parts[parts.length - 1] || "this lesson";
+    // Convert kebab-case to title case, remove numeric prefixes
+    return lastPart
+      .replace(/^\d+-/, "")
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }, [lessonPath]);
 
-  // Track previous mode to detect changes
-  const prevModeRef = useRef(mode);
-
-  // Auto-send initial message when panel opens with empty conversation
-  useEffect(() => {
-    if (isOpen && conversation.messages.length === 0 && !isLoading) {
-      // Small delay to ensure component is fully mounted
-      const timer = setTimeout(() => {
-        if (mode === 'teach') {
-          sendMessage(lessonPath, 'teach me', `${lessonPath}:${mode}`, mode);
-        } else if (mode === 'ask') {
-          sendMessage(lessonPath, 'show suggestions', `${lessonPath}:${mode}`, mode);
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isOpen, conversation.messages.length, isLoading, mode, lessonPath, sendMessage]);
-
-  // Scroll to show the start of new AI response (not the end)
-  useEffect(() => {
-    const currentCount = conversation.messages.length;
-    const prevCount = prevMessageCountRef.current;
-
-    // Check if a new assistant message was added
-    if (currentCount > prevCount && currentCount > 0) {
-      const lastMessage = conversation.messages[currentCount - 1];
-      if (lastMessage.role === 'assistant') {
-        // Scroll to show the START of the new AI message (not the end)
-        const scrollToStart = () => {
-          // Find the last message element and scroll it into view at the TOP
-          const messageList = document.querySelector('.cs-message-list');
-          const messages = messageList?.querySelectorAll('.cs-message-group');
-          const lastMessageGroup = messages?.[messages.length - 1] as HTMLElement;
-
-          if (lastMessageGroup) {
-            // Use scrollIntoView with 'start' to show beginning of message
-            lastMessageGroup.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-        };
-
-        // Delay to let DOM render, then override ChatScope's auto-scroll
-        setTimeout(scrollToStart, 100);
-        setTimeout(scrollToStart, 250);
-        setTimeout(scrollToStart, 500);
-      }
+  // Handle text selection for Ask feature
+  const handleSelection = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      setSelectedText("");
+      setSelectionPosition(null);
+      return;
     }
 
-    prevMessageCountRef.current = currentCount;
-  }, [conversation.messages]);
-
-  // Handle mode change - auto-send initial message
-  const handleModeChange = useCallback((newMode: 'teach' | 'ask') => {
-    setMode(newMode);
-    // DON'T clear conversation - keep separate conversations per mode
-
-    // Only auto-send initial message if that mode has no conversation yet
-    const newConversationKey = `${lessonPath}:${newMode}`;
-    const existingConversation = getCurrentConversation(newConversationKey);
-
-    if (existingConversation.messages.length === 0) {
-      setTimeout(() => {
-        if (newMode === 'ask') {
-          // Pass mode explicitly to avoid stale state issue
-          sendMessage(lessonPath, 'show suggestions', newConversationKey, newMode);
-        } else if (newMode === 'teach') {
-          // Pass mode explicitly to avoid stale state issue
-          sendMessage(lessonPath, 'teach me', newConversationKey, newMode);
-        }
-      }, 100);
-    }
-  }, [setMode, lessonPath, sendMessage, getCurrentConversation]);
-
-  // Handle escape key to close panel
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        closePanel();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, closePanel]);
-
-  // Prevent body scroll when panel is open on mobile
-  useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
+    const text = selection.toString().trim();
+    if (text.length > 0 && text.length < 500) {
+      // Limit selection length
+      setSelectedText(text);
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      // Position button above selection
+      setSelectionPosition({
+        x: rect.left + rect.width / 2,
+        y: rect.top - 10 + window.scrollY,
+      });
     } else {
-      document.body.style.overflow = '';
+      setSelectedText("");
+      setSelectionPosition(null);
     }
-    return () => {
-      document.body.style.overflow = '';
-    };
-  }, [isOpen]);
+  }, []);
 
-  // Clear error after 5 seconds
+  // Listen for text selection
   useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => setError(null), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error, setError]);
+    document.addEventListener("selectionchange", handleSelection);
+    document.addEventListener("mouseup", handleSelection);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelection);
+      document.removeEventListener("mouseup", handleSelection);
+    };
+  }, [handleSelection]);
 
-  // Get placeholder text based on mode
-  const placeholder = mode === 'teach'
-    ? 'Say "teach me" or ask for an explanation...'
-    : 'Ask any question about this lesson...';
+  // Handle Ask button click - opens panel in ask mode with selected text
+  const handleAskSelectedText = useCallback(() => {
+    if (!selectedText) return;
+
+    const question = `Can you explain this from "${lessonTitle}":\n\n"${selectedText}"`;
+    setMode("ask");
+    setInitialMessage(question);
+    setChatKey((prev) => prev + 1); // Reset chat with new message
+    openPanel(); // Open the panel
+
+    // Clear selection
+    setSelectedText("");
+    setSelectionPosition(null);
+    window.getSelection()?.removeAllRanges();
+  }, [selectedText, lessonTitle, openPanel]);
 
   return (
     <>
-      {/* Overlay for mobile */}
-      <div
-        className={`${styles.overlay} ${isOpen ? styles.overlayVisible : ''}`}
-        onClick={closePanel}
-        aria-hidden="true"
-      />
+      {/* Floating Ask button appears when text is selected (logged-in only) */}
+      {isLoggedIn && selectedText && selectionPosition && !isOpen && (
+        <div
+          className={styles.askButton}
+          style={{
+            position: "absolute",
+            left: `${selectionPosition.x}px`,
+            top: `${selectionPosition.y}px`,
+            transform: "translateX(-50%) translateY(-100%)",
+            zIndex: 9999,
+          }}
+          onClick={handleAskSelectedText}
+        >
+          <span>Ask</span>
+        </div>
+      )}
 
-      {/* Main panel */}
-      <aside
-        className={`${styles.panel} ${isOpen ? styles.panelOpen : ''}`}
-        role="complementary"
-        aria-label="Study Mode Chat Panel"
-        aria-hidden={!isOpen}
+      <Sheet
+        open={isLoggedIn && isOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closePanel();
+            // Clear initialMessage when panel closes to prevent re-sending on next open
+            setInitialMessage(undefined);
+            // Reset to teach mode as default
+            setMode("teach");
+          }
+        }}
       >
-        {/* Custom Header with Mode Toggle */}
-        <div className={styles.chatKitHeader}>
-          <div className={styles.headerTop}>
-            <div className={styles.titleSection}>
-              <h2 className={styles.title}>Study Mode</h2>
-              {mode === 'teach' && (
-                <span className={styles.methodBadge}>
-                  Teaching by Socratic Method (OpenAI Study Mode & Google Extended Learning)
-                </span>
-              )}
-            </div>
-            <div className={styles.headerActions}>
-              <button
-                className={styles.iconButton}
-                onClick={handleClear}
-                aria-label="Start new conversation"
-                title="New Chat"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-              </button>
-              <button
-                className={styles.iconButton}
-                onClick={closePanel}
-                aria-label="Close panel"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
+        <SheetContent
+          side="right"
+          className="w-full sm:max-w-md md:max-w-lg p-0 flex flex-col"
+          hideCloseButton
+        >
+          {/* Mobile close button - top left corner */}
+          <SheetClose className={styles.mobileCloseButton}>
+            <X className="h-5 w-5" />
+            <span className="sr-only">Close</span>
+          </SheetClose>
+
+          {/* ChatKit Component - no header, full height */}
+          <div className={styles.chatContainer}>
+            <ChatKitWrapper
+              key={`${lessonPath}-${chatKey}-${mode}`}
+              lessonPath={lessonPath}
+              lessonTitle={lessonTitle}
+              apiBase={studyModeApiUrl}
+              domainKey={chatkitDomainKey}
+              mode={mode}
+              initialMessage={initialMessage}
+            />
           </div>
-          <ModeToggle mode={mode} onModeChange={handleModeChange} />
-        </div>
-
-        {/* Error display */}
-        {error && (
-          <div className={styles.error} role="alert">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            {error}
-          </div>
-        )}
-
-        {/* Mode indicator bar */}
-        <div className={`${styles.modeIndicator} ${mode === 'teach' ? styles.modeTeach : styles.modeAsk}`}>
-          {mode === 'teach' ? (
-            <>
-              <span className={styles.modeIcon}>📚</span>
-              <span>Socratic Teaching - AI guides you with questions</span>
-            </>
-          ) : (
-            <>
-              <span className={styles.modeIcon}>⚡</span>
-              <span>Quick Answers - Direct responses only</span>
-            </>
-          )}
-        </div>
-
-        {/* ChatScope Chat Container */}
-        <div className={styles.chatKitContainer}>
-          <MainContainer>
-            <ChatContainer>
-              <MessageList
-                autoScrollToBottom={false}
-                autoScrollToBottomOnMount={false}
-                typingIndicator={
-                  isLoading ? (
-                    <TypingIndicator content="AI Tutor is thinking..." />
-                  ) : null
-                }
-              >
-                {conversation.messages.length === 0 && !isLoading ? (
-                  <MessageList.Content className={styles.emptyStateWrapper}>
-                    <div className={styles.emptyState}>
-                      <div className={styles.emptyIcon}>
-                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                          {mode === 'teach' ? (
-                            <><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" /></>
-                          ) : (
-                            <><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></>
-                          )}
-                        </svg>
-                      </div>
-                      <h3 className={styles.emptyTitle}>
-                        {mode === 'teach' ? 'Ready to Learn' : 'Ask Questions'}
-                      </h3>
-                      <p className={styles.emptyText}>
-                        {mode === 'teach'
-                          ? 'Click the Teach button to get a guided explanation of this lesson from the book.'
-                          : 'Click the Ask button to see suggested questions from this lesson.'}
-                      </p>
-                    </div>
-                  </MessageList.Content>
-                ) : (
-                  conversation.messages.map((msg, index) => {
-                    // Parse assistant messages for clickable topics/questions
-                    const parsed = msg.role === 'assistant'
-                      ? parseMessageForClickables(msg.content)
-                      : { mainContent: msg.content, clickables: [], label: '' };
-
-                    return (
-                      <React.Fragment key={`${msg.timestamp}-${index}`}>
-                        <Message
-                          model={{
-                            sentTime: msg.timestamp,
-                            sender: msg.role === 'user' ? 'You' : 'AI Tutor',
-                            direction: msg.role === 'user' ? 'outgoing' : 'incoming',
-                            position: 'single',
-                          }}
-                        >
-                          {msg.role === 'assistant' && (
-                            <Avatar
-                              name="AI Tutor"
-                              src=""
-                              size="sm"
-                            >
-                              <div className={styles.aiAvatar}>
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M12 2a10 10 0 1 0 10 10H12V2z" />
-                                  <path d="M12 2a10 10 0 0 1 10 10" />
-                                  <circle cx="12" cy="12" r="3" />
-                                </svg>
-                              </div>
-                            </Avatar>
-                          )}
-                          {/* Render markdown for assistant, plain text for user */}
-                          <Message.CustomContent>
-                            {msg.role === 'assistant' ? (
-                              <MarkdownContent content={parsed.mainContent} />
-                            ) : (
-                              <div className={styles.userMessage}>{parsed.mainContent}</div>
-                            )}
-                          </Message.CustomContent>
-                        </Message>
-
-                        {/* Render clickable topics/questions as buttons */}
-                        {parsed.clickables.length > 0 && (
-                          <div className={styles.clickableButtonsWrapper}>
-                            <div className={styles.clickableButtonsLabel}>
-                              {parsed.label || (parsed.clickables[0].type === 'topic'
-                                ? '🤔 Do you also want to know about?'
-                                : '❓ What would you like to know?')}
-                            </div>
-                            <div className={styles.clickableButtons}>
-                              {parsed.clickables.map((item, i) => (
-                                <button
-                                  key={i}
-                                  className={`${styles.clickableButton} ${
-                                    item.type === 'topic' ? styles.topicButton : styles.questionButton
-                                  }`}
-                                  onClick={() => handleSend(item.text)}
-                                  disabled={isLoading}
-                                >
-                                  <span className={styles.buttonIcon}>
-                                    {item.type === 'topic' ? '→' : '?'}
-                                  </span>
-                                  {item.text}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </React.Fragment>
-                    );
-                  })
-                )}
-              </MessageList>
-              <MessageInput
-                placeholder={placeholder}
-                onSend={handleSend}
-                disabled={isLoading}
-                attachButton={false}
-                sendButton={true}
-              />
-            </ChatContainer>
-          </MainContainer>
-        </div>
-      </aside>
+        </SheetContent>
+      </Sheet>
     </>
   );
 }
 
-// Also export sub-components for potential standalone use
-export { ModeToggle } from './ModeToggle';
-export { ChatMessages } from './ChatMessages';
-export { ChatInput } from './ChatInput';
-export { useStudyModeAPI } from './useStudyModeAPI';
-
+export default TeachMePanel;

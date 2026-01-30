@@ -1,0 +1,89 @@
+# =============================================================================
+# Docker Compose - Python Local Development
+# =============================================================================
+# Usage: docker compose up --build
+# Hot-reload: Edit code locally, changes reflect immediately
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        PYTHON_VERSION: "3.13"
+        UV_VERSION: "0.5"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Source code - choose your layout:
+      - ./src:/app/src                    # src/ layout (recommended)
+      # - ./app:/app/app                  # app/ layout
+
+      # Dependency files (for rebuild detection)
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
+      # Or if using requirements.txt:
+      # - ./requirements.txt:/app/requirements.txt:ro
+    environment:
+      # Application
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+
+      # Database
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/app
+
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+
+      # CORS (development)
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Graceful shutdown
+    stop_grace_period: 10s
+
+  # ======================== PostgreSQL ========================
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ======================== Redis ========================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

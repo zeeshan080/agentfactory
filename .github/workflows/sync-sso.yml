@@ -16,11 +16,9 @@ jobs:
       - name: Sync to SSO mirror with deploy trigger
         env:
           SSO_PAT: ${{ secrets.SSO_PAT }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           MIRROR_URL="https://x-access-token:${SSO_PAT}@github.com/panaversity-global/sso-mirror-mono.git"
-
-          # Allow incomplete LFS push (historical LFS objects may be missing after migration to CDN)
-          git config lfs.allowincompletepush true
 
           # Force push source to mirror
           git push "${MIRROR_URL}" HEAD:main --force
@@ -32,7 +30,7 @@ jobs:
           # Update CHANGELOG with sync timestamp to trigger Vercel deployment
           echo "Synced from panaversity/agentfactory at $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > CHANGELOG.md
           echo "Source commit: ${{ github.sha }}" >> CHANGELOG.md
-          echo "Message: ${{ github.event.head_commit.message }}" >> CHANGELOG.md
+          echo "Message: ${COMMIT_MESSAGE}" >> CHANGELOG.md
 
           git add CHANGELOG.md
           git commit -m "sync: trigger deploy from ${{ github.sha }}"

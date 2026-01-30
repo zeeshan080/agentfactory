@@ -146,41 +146,51 @@ article {
   gap: 0.5rem;
 }
 
-/* Teach Me button - prominent purple gradient */
-.doc-page-actions-teach-me {
+/* Study Mode button - primary blue theme with AI sparkle */
+.doc-page-actions-study-mode {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.5rem 0.875rem;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--primary), oklch(0.5 0.2 280));
-  border: none;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0; /* Sharp corners - brand standard */
+  background: oklch(0.50 0.14 255);
+  border: 1px solid oklch(0.55 0.14 255);
   color: white;
   font-size: 0.8125rem;
   font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  transition: all 200ms ease-out;
-  box-shadow: 0 2px 8px oklch(0 0 0 / 0.15);
+  transition: all 150ms ease-out;
+  box-shadow: 0 2px 8px oklch(0.50 0.14 255 / 0.3);
   min-height: 36px;
 }
 
-.doc-page-actions-teach-me:hover {
+.doc-page-actions-study-mode:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px oklch(0 0 0 / 0.2);
+  box-shadow: 0 4px 12px oklch(0.50 0.14 255 / 0.4);
+  background: oklch(0.55 0.14 255);
+  border-color: oklch(0.60 0.14 255);
 }
 
-.doc-page-actions-teach-me:focus-visible {
-  outline: 2px solid white;
+.doc-page-actions-study-mode:focus-visible {
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
-.doc-page-actions-teach-me svg {
+.doc-page-actions-study-mode svg {
   width: 16px;
   height: 16px;
 }
 
-[data-theme='dark'] .doc-page-actions-teach-me {
-  background: linear-gradient(135deg, var(--primary), oklch(0.45 0.2 280));
+[data-theme='dark'] .doc-page-actions-study-mode {
+  background: oklch(0.55 0.14 255);
+  border-color: oklch(0.60 0.14 255);
+  box-shadow: 0 2px 8px oklch(0.55 0.14 255 / 0.35);
+}
+
+[data-theme='dark'] .doc-page-actions-study-mode:hover {
+  background: oklch(0.60 0.14 255);
+  border-color: oklch(0.65 0.14 255);
 }
 
 /* Split button container - pill shape with subtle shadow */
@@ -778,6 +788,89 @@ article {
 .back-to-top-button {
   width: 40px !important;
   height: 40px !important;
+}
+
+/* Study Mode floating button - brand blue, sharp corners */
+.study-mode-float {
+  background: oklch(0.50 0.14 255) !important;
+  border-color: oklch(0.55 0.14 255) !important;
+  color: white !important;
+  border-radius: 0 !important;
+  /* Subtle glow for visibility */
+  box-shadow: 0 2px 8px oklch(0.50 0.14 255 / 0.3) !important;
+  /* Pulse animation on first appearance */
+  animation: studyModePulse 2s ease-out;
+  /* Position for tooltip */
+  position: relative;
+}
+
+/* Tooltip for Study Mode button */
+.study-mode-float::after {
+  content: "Study Mode";
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: oklch(0.20 0 0);
+  color: white;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+  pointer-events: none;
+}
+
+.study-mode-float:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+.study-mode-float:hover {
+  background: oklch(0.55 0.14 255) !important;
+  border-color: oklch(0.60 0.14 255) !important;
+  color: white !important;
+  box-shadow: 0 4px 12px oklch(0.50 0.14 255 / 0.45) !important;
+  animation: none; /* Stop animation on hover */
+}
+
+[data-theme='dark'] .study-mode-float {
+  background: oklch(0.55 0.14 255) !important;
+  border-color: oklch(0.60 0.14 255) !important;
+  color: white !important;
+  box-shadow: 0 2px 8px oklch(0.55 0.14 255 / 0.35) !important;
+}
+
+[data-theme='dark'] .study-mode-float:hover {
+  background: oklch(0.60 0.14 255) !important;
+  border-color: oklch(0.65 0.14 255) !important;
+  box-shadow: 0 4px 12px oklch(0.55 0.14 255 / 0.5) !important;
+}
+
+/* Subtle pulse animation - plays once on appearance */
+@keyframes studyModePulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 2px 8px oklch(0.50 0.14 255 / 0.3);
+  }
+  25% {
+    transform: scale(1.08);
+    box-shadow: 0 4px 20px oklch(0.50 0.14 255 / 0.5);
+  }
+  50% {
+    transform: scale(1);
+    box-shadow: 0 2px 8px oklch(0.50 0.14 255 / 0.3);
+  }
+  75% {
+    transform: scale(1.05);
+    box-shadow: 0 3px 15px oklch(0.50 0.14 255 / 0.4);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 2px 8px oklch(0.50 0.14 255 / 0.3);
+  }
 }
 
 /* Hide Docusaurus's built-in back-to-top button (we use custom implementation) */
